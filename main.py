@@ -520,8 +520,8 @@ def create_trip(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    if not user.has_car:
-        raise HTTPException(status_code=400, detail="Для создания поездки нужно добавить автомобиль в профиле")
+    #if not user.has_car:
+    #    raise HTTPException(status_code=400, detail="Для создания поездки нужно добавить автомобиль в профиле")
     
     # Создаем поездку
     trip_dict = trip_data.dict()
