@@ -33,7 +33,7 @@ class LoginRequest(BaseModel):
 
 class DriverTripCreate(BaseModel):
     departure_date: datetime
-    departure_time: str = Field(..., regex=r'^([0-1][0-9]|2[0-3]):[0-5][0-9]$')
+    departure_time: str = Field(..., pattern=r'^([0-1][0-9]|2[0-3]):[0-5][0-9]$')
     start_address: str
     start_lat: Optional[float] = None
     start_lng: Optional[float] = None
