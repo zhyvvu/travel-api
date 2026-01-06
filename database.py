@@ -1,4 +1,5 @@
 # database.py - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ ДЛЯ TELEGRAM WEB APP
+import os
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, ForeignKey, Text, Enum, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -7,7 +8,6 @@ import enum
 import json
 
 # SQLite база
-import os
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./travel_companion.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
