@@ -1,29 +1,54 @@
-# minimal_bot.py - ТЕЛЕГРАМ БОТ ДЛЯ TRAVEL COMPANION
+# minimal_bot.py - БЕЗОПАСНАЯ ВЕРСИЯ ТЕЛЕГРАМ БОТА ДЛЯ TRAVEL COMPANION
 import logging
+import os
+from dotenv import load_dotenv
+from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-import os
 
-# Настройки
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7440722159:AAH3mLjWboLCBVmOvozdpX7MRo1_Os-fWaQ")  # ⚠️ ЗАМЕНИТЕ на реальный токен!
-MINI_APP_URL = "https://zhyvvu.github.io/travel-companion-app/"  # ⚠️ ЗАМЕНИТЕ на ваш URL
+load_dotenv()
+# =============== НАСТРОЙКИ ===============
+# ВАЖНО: Никогда не храните токены в коде!
+# Установите переменные окружения на Render.com:
+# 1. TELEGRAM_BOT_TOKEN = ваш_токен_от_botfather
+# 2. MINI_APP_URL = https://ваш_юзернейм.github.io/travel-companion-app/
 
-# Логирование
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+MINI_APP_URL = os.getenv("MINI_APP_URL", "https://zhyvvu.github.io/travel-companion-app/")
+
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    logging.critical("❌ TELEGRAM_BOT_TOKEN не установлен в переменных окружения!")
+    logging.critical("ℹ️  Получите токен у @BotFather и установите на Render.com")
+    exit(1)
+
+if "ваш_юзернейм" in MINI_APP_URL or "ВАШ_URL" in MINI_APP_URL:
+    logging.warning("⚠️  MINI_APP_URL не настроен. Установите правильный URL на Render.com")
+
+# =============== ЛОГИРОВАНИЕ ===============
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),  # Вывод в консоль
+        logging.FileHandler('bot.log', encoding='utf-8')  # Лог в файл
+    ]
 )
 logger = logging.getLogger(__name__)
 
+# =============== ФУНКЦИИ БОТА ===============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start - приветствие и кнопка Mini App"""
     user = update.effective_user
+    
+    # Логирование запуска
+    logger.info(f"Пользователь {user.id} ({user.username}) запустил бота")
     
     # Приветственное сообщение
     welcome_text = f"""
 👋 Привет, {user.first_name}!
 
-🚗 Добро пожаловать в *Travel Companion* — сервис поиска попутчиков для путешествий!
+🚗 *Travel Companion* — сервис поиска попутчиков для путешествий!
 
 ✨ *Что умеет бот:*
 • 🔍 Найти поездку с попутчиками
@@ -37,10 +62,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. В приложении авторизуйтесь через Telegram
 3. Начните искать поездки или создавайте свои!
 
-⚡ *Быстрые команды:*
+📱 *Быстрые команды:*
 /start - Показать это сообщение
 /help - Получить справку
 /about - О проекте
+/app - Открыть приложение
+/stats - Статистика (для администраторов)
 """
     
     # Создаем клавиатуру с кнопкой Mini App
@@ -56,11 +83,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         welcome_text,
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        disable_web_page_preview=True
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help"""
+    user = update.effective_user
+    logger.info(f"Пользователь {user.id} запросил помощь")
+    
     help_text = """
 🆘 *Помощь по Travel Companion*
 
@@ -89,12 +120,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /start - Главное меню
 /help - Эта справка
 /about - О проекте
+/app - Быстрый доступ к приложению
 """
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /about"""
+    user = update.effective_user
+    logger.info(f"Пользователь {user.id} запросил информацию о проекте")
+    
     about_text = """
 📱 *Travel Companion*
 
@@ -117,13 +152,12 @@ Travel Companion — это сервис для поиска попутчико�
 *Технологии:*
 • Backend: Python, FastAPI, SQLAlchemy
 • Frontend: HTML/CSS/JavaScript, Telegram Web App
-• База данных: SQLite
-• Хостинг: GitHub Pages + Heroku/Render
+• База данных: SQLite / PostgreSQL
+• Хостинг: GitHub Pages + Render.com
 
 *Контакты:*
 • Поддержка: @travel_companion_support
-• Исходный код: GitHub
-• Документация: в разработке
+• GitHub: https://github.com/ваш_юзернейм/travel-companion
 
 *Благодарности:*
 Спасибо, что используете Travel Companion! 
@@ -149,26 +183,93 @@ Travel Companion — это сервис для поиска попутчико�
         parse_mode='Markdown'
     )
 
+async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /app - быстрый доступ к приложению"""
+    user = update.effective_user
+    logger.info(f"Пользователь {user.id} запросил прямое открытие приложения")
+    
+    keyboard = [[
+        InlineKeyboardButton(
+            "🚗 Открыть Travel Companion",
+            web_app=WebAppInfo(url=MINI_APP_URL)
+        )
+    ]]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "Нажмите кнопку ниже, чтобы открыть приложение:",
+        reply_markup=reply_markup
+    )
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /stats - статистика (только для администраторов)"""
+    user = update.effective_user
+    
+    # Список ID администраторов (замените на свои)
+    ADMIN_IDS = [123456789]  # Ваш Telegram ID
+    
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Эта команда только для администраторов")
+        return
+    
+    logger.info(f"Администратор {user.id} запросил статистику")
+    
+    # Здесь можно добавить получение статистики из БД
+    stats_text = """
+📊 *Статистика Travel Companion*
+
+*Система:*
+• Бот запущен и работает
+• Mini App доступен по ссылке
+• API сервер активен
+
+*Команды для админа:*
+• Проверить логи: /logs
+• Перезапустить бота: /restart
+• Проверить базу данных: /dbcheck
+
+*Следующие шаги:*
+1. Добавить мониторинг ошибок
+2. Настроить автоматические бэкапы
+3. Добавить аналитику использования
+"""
+    
+    await update.message.reply_text(stats_text, parse_mode='Markdown')
+
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка данных из Web App"""
+    user = update.effective_user
     data = update.effective_message.web_app_data.data
-    logger.info(f"Получены данные из Web App: {data}")
     
-    # Здесь можно обрабатывать данные из Mini App
-    await update.message.reply_text(
-        "✅ Данные из приложения получены. Спасибо за использование Travel Companion!",
-        parse_mode='Markdown'
-    )
+    logger.info(f"Получены данные из Web App от пользователя {user.id}: {data[:50]}...")
+    
+    try:
+        # Здесь можно обрабатывать данные из Mini App
+        # Например, сохранять в БД или отправлять уведомления
+        
+        await update.message.reply_text(
+            "✅ Данные из приложения получены. Спасибо за использование Travel Companion!",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Ошибка обработки данных Web App: {e}")
+        await update.message.reply_text(
+            "⚠️ Произошла ошибка при обработке данных. Попробуйте еще раз."
+        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
-    text = update.message.text
+    user = update.effective_user
+    text = update.message.text.lower()
     
-    if "привет" in text.lower() or "hello" in text.lower():
+    logger.info(f"Текстовое сообщение от {user.id}: {text[:50]}...")
+    
+    if any(word in text for word in ['привет', 'hello', 'хай', 'hi']):
         await update.message.reply_text(
-            "Привет! Напишите /start чтобы открыть меню приложения 🚗"
+            f"Привет, {user.first_name}! Напишите /start чтобы открыть меню приложения 🚗"
         )
-    elif "поездк" in text.lower() or "попутчик" in text.lower():
+    elif any(word in text for word in ['поездк', 'попутчик', 'машин', 'водител']):
         keyboard = [[
             InlineKeyboardButton(
                 "🚗 Найти поездку",
@@ -180,6 +281,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Чтобы найти или создать поездку, откройте приложение:",
             reply_markup=reply_markup
         )
+    elif any(word in text for word in ['помощь', 'help', 'поддержк', 'problem']):
+        await help_command(update, context)
     else:
         keyboard = [[
             InlineKeyboardButton(
@@ -189,45 +292,86 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "Я не совсем понимаю ваш запрос. Попробуйте открыть приложение для полного доступа ко всем функциям:",
+            "Я бот для сервиса Travel Companion. Используйте кнопки ниже или команды:\n\n"
+            "/start - Главное меню\n"
+            "/help - Помощь\n"
+            "/about - О проекте\n"
+            "/app - Открыть приложение",
             reply_markup=reply_markup
         )
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ошибок"""
+    logger.error(f"Ошибка при обработке сообщения: {context.error}")
+    
+    # Можно отправить уведомление администратору
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка. Пожалуйста, попробуйте еще раз позже."
+            )
+        except:
+            pass
+
+# =============== ЗАПУСК БОТА ===============
 def main():
     """Запуск бота"""
     print("=" * 60)
     print("🤖 ЗАПУСК TELEGRAM БОТА ДЛЯ TRAVEL COMPANION")
     print("=" * 60)
     
-    if BOT_TOKEN == "ВАШ_ТОКЕН_БОТА":
-        print("❌ ОШИБКА: Замените BOT_TOKEN на реальный токен!")
-        print("ℹ️  Получите токен у @BotFather в Telegram")
+    # Проверка конфигурации
+    print("🔧 Конфигурация:")
+    print(f"   Бот токен: {'✅ Установлен' if BOT_TOKEN else '❌ Отсутствует'}")
+    print(f"   Mini App URL: {MINI_APP_URL}")
+    
+    if not BOT_TOKEN:
+        print("❌ ОШИБКА: TELEGRAM_BOT_TOKEN не установлен!")
+        print("ℹ️  Инструкция:")
+        print("   1. Получите токен у @BotFather в Telegram")
+        print("   2. На Render.com добавьте переменную окружения TELEGRAM_BOT_TOKEN")
+        print("   3. Перезапустите приложение на Render")
         return
     
-    print(f"🔗 Mini App URL: {MINI_APP_URL}")
-    print("📱 Функционал бота:")
+    print("\n📱 Функционал бота:")
     print("   • /start - Главное меню с кнопкой Mini App")
     print("   • /help - Подробная справка")
     print("   • /about - Информация о проекте")
+    print("   • /app - Быстрый доступ к приложению")
+    print("   • /stats - Статистика (администраторы)")
     print("   • Обработка текстовых сообщений")
     print("=" * 60)
     
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Регистрируем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("about", about_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("✅ Бот запущен!")
-    print("🔄 Ожидание сообщений...")
-    print("⚠️  Для остановки нажмите Ctrl+C")
-    print("=" * 60)
-    
-    # Запускаем бота
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # Создаем приложение
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Регистрируем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("about", about_command))
+        application.add_handler(CommandHandler("app", app_command))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Обработчик ошибок
+        application.add_error_handler(error_handler)
+        
+        print("✅ Бот запущен успешно!")
+        print("🔄 Ожидание сообщений...")
+        print("⚠️  Для остановки нажмите Ctrl+C")
+        print("=" * 60)
+        
+        # Запускаем бота
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True  # Игнорировать старые сообщения
+        )
+        
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при запуске бота: {e}")
+        print(f"❌ Критическая ошибка: {e}")
+        print("ℹ️  Проверьте токен бота и подключение к интернету")
 
 if __name__ == "__main__":
     main()
