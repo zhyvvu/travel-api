@@ -86,6 +86,19 @@ class CarUpdate(BaseModel):
     is_default: Optional[bool] = None
     is_active: Optional[bool] = None
 
+class BookingUpdate(BaseModel):
+    booked_seats: Optional[int] = Field(None, ge=1, le=10)
+    notes: Optional[str] = None
+
+class DriverTripUpdate(BaseModel):
+    available_seats: Optional[int] = Field(None, ge=1, le=10)
+    price_per_seat: Optional[float] = Field(None, gt=0)
+    departure_date: Optional[datetime] = None
+    departure_time: Optional[str] = Field(None, pattern=r'^([0-1][0-9]|2[0-3]):[0-5][0-9]$')
+    comment: Optional[str] = None
+    start_address: Optional[str] = None
+    finish_address: Optional[str] = None
+
 # Функция для проверки Telegram Web App данных (опционально)
 def verify_telegram_data(init_data: str, bot_token: str) -> bool:
     """Проверка подписи данных от Telegram"""
@@ -1163,6 +1176,313 @@ def debug_users(db: Session = Depends(database.get_db)):
         "success": True,
         "count": len(result),
         "users": result
+    }
+
+@app.put("/api/bookings/{booking_id}")
+def update_booking(
+    booking_id: int,
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    update_data: BookingUpdate = None,
+    db: Session = Depends(database.get_db)
+):
+    """Обновить бронирование (только пассажир)"""
+    booking = db.query(database.Booking).filter(
+        database.Booking.id == booking_id
+    ).first()
+    
+    if not booking:
+        raise HTTPException(status_code=404, detail="Бронирование не найдено")
+    
+    # Находим пользователя
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Проверяем права: только пассажир может менять свое бронирование
+    if booking.passenger_id != user.id:
+        raise HTTPException(status_code=403, detail="Нет прав для изменения этого бронирования")
+    
+    # Проверяем, что поездка еще не началась
+    trip = booking.driver_trip
+    if trip.departure_date < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Невозможно изменить бронирование, поездка уже началась")
+    
+    # Проверяем статус
+    if booking.status != database.TripStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Бронирование не активно")
+    
+    changes = {}
+    
+    # Обновляем количество мест
+    if update_data and update_data.booked_seats is not None:
+        old_seats = booking.booked_seats
+        new_seats = update_data.booked_seats
+        seat_diff = new_seats - old_seats
+        
+        # Проверяем доступность мест
+        if trip.available_seats < seat_diff:
+            raise HTTPException(status_code=400, detail="Недостаточно свободных мест")
+        
+        # Обновляем количество свободных мест
+        trip.available_seats -= seat_diff
+        booking.booked_seats = new_seats
+        changes["seats"] = f"{old_seats} → {new_seats}"
+        
+        # Если не осталось мест, меняем статус поездки
+        if trip.available_seats <= 0:
+            trip.status = database.TripStatus.COMPLETED
+    
+    # Обновляем заметки
+    if update_data and update_data.notes is not None:
+        booking.notes = update_data.notes
+        changes["notes"] = "обновлены"
+    
+    if changes:
+        booking.updated_at = datetime.utcnow()
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Бронирование обновлено",
+            "changes": changes,
+            "booking": {
+                "id": booking.id,
+                "seats": booking.booked_seats,
+                "price": booking.price_agreed,
+                "status": booking.status.value,
+                "notes": booking.notes
+            }
+        }
+    
+    return {
+        "success": False,
+        "message": "Нет изменений для обновления"
+    }
+
+@app.put("/api/trips/{trip_id}")
+def update_driver_trip(
+    trip_id: int,
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    update_data: DriverTripUpdate = None,
+    db: Session = Depends(database.get_db)
+):
+    """Обновить поездку (только водитель)"""
+    trip = db.query(database.DriverTrip).filter(
+        database.DriverTrip.id == trip_id
+    ).first()
+    
+    if not trip:
+        raise HTTPException(status_code=404, detail="Поездка не найдена")
+    
+    # Находим пользователя
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Проверяем права: только водитель может менять свою поездку
+    if trip.driver_id != user.id:
+        raise HTTPException(status_code=403, detail="Нет прав для изменения этой поездки")
+    
+    # Проверяем, что поездка еще не началась
+    if trip.departure_date < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Невозможно изменить поездку, она уже началась")
+    
+    # Проверяем статус
+    if trip.status != database.TripStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Поездка не активна")
+    
+    changes = {}
+    
+    if update_data:
+        # Обновляем количество мест
+        if update_data.available_seats is not None:
+            # Проверяем, что новое количество мест не меньше уже забронированных
+            total_booked = sum(b.booked_seats for b in trip.bookings)
+            if update_data.available_seats < total_booked:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Невозможно уменьшить количество мест до {update_data.available_seats}, уже забронировано {total_booked}"
+                )
+            
+            old_seats = trip.available_seats
+            trip.available_seats = update_data.available_seats
+            changes["seats"] = f"{old_seats} → {update_data.available_seats}"
+        
+        # Обновляем цену
+        if update_data.price_per_seat is not None:
+            old_price = trip.price_per_seat
+            trip.price_per_seat = update_data.price_per_seat
+            trip.total_price = trip.available_seats * update_data.price_per_seat
+            changes["price"] = f"{old_price} → {update_data.price_per_seat}"
+        
+        # Обновляем дату и время
+        if update_data.departure_date is not None:
+            # Проверяем, что новая дата не в прошлом
+            if update_data.departure_date < datetime.utcnow():
+                raise HTTPException(status_code=400, detail="Дата поездки не может быть в прошлом")
+            
+            old_date = trip.departure_date
+            trip.departure_date = update_data.departure_date
+            changes["date"] = f"{old_date.strftime('%d.%m.%Y')} → {update_data.departure_date.strftime('%d.%m.%Y')}"
+        
+        if update_data.departure_time is not None:
+            old_time = trip.departure_time
+            trip.departure_time = update_data.departure_time
+            changes["time"] = f"{old_time} → {update_data.departure_time}"
+        
+        # Обновляем комментарий
+        if update_data.comment is not None:
+            trip.comment = update_data.comment
+            changes["comment"] = "обновлен"
+        
+        # Обновляем адреса
+        if update_data.start_address is not None:
+            from extract_city import extract_city
+            trip.start_address = update_data.start_address
+            trip.start_city = extract_city(update_data.start_address)
+            changes["start_address"] = "обновлен"
+        
+        if update_data.finish_address is not None:
+            from extract_city import extract_city
+            trip.finish_address = update_data.finish_address
+            trip.finish_city = extract_city(update_data.finish_address)
+            changes["finish_address"] = "обновлен"
+    
+    if changes:
+        trip.updated_at = datetime.utcnow()
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Поездка обновлена",
+            "changes": changes,
+            "trip": {
+                "id": trip.id,
+                "available_seats": trip.available_seats,
+                "price_per_seat": trip.price_per_seat,
+                "departure_date": trip.departure_date.isoformat() if trip.departure_date else None,
+                "departure_time": trip.departure_time,
+                "comment": trip.comment,
+                "start_address": trip.start_address,
+                "finish_address": trip.finish_address,
+                "status": trip.status.value
+            }
+        }
+    
+    return {
+        "success": False,
+        "message": "Нет изменений для обновления"
+    }
+
+@app.post("/api/trips/{trip_id}/cancel")
+def cancel_driver_trip(
+    trip_id: int,
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    db: Session = Depends(database.get_db)
+):
+    """Отменить поездку (водитель)"""
+    trip = db.query(database.DriverTrip).filter(
+        database.DriverTrip.id == trip_id
+    ).first()
+    
+    if not trip:
+        raise HTTPException(status_code=404, detail="Поездка не найдена")
+    
+    # Находим пользователя
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Проверяем права
+    if trip.driver_id != user.id:
+        raise HTTPException(status_code=403, detail="Нет прав для отмены этой поездки")
+    
+    # Проверяем, что поездка еще не началась
+    if trip.departure_date < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Невозможно отменить поездку, она уже началась")
+    
+    # Проверяем статус
+    if trip.status == database.TripStatus.CANCELLED:
+        return {"success": True, "message": "Поездка уже отменена"}
+    
+    if trip.status != database.TripStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Поездка не активна")
+    
+    # Отменяем поездку
+    trip.status = database.TripStatus.CANCELLED
+    trip.updated_at = datetime.utcnow()
+    
+    # Отменяем все бронирования этой поездки
+    for booking in trip.bookings:
+        if booking.status == database.TripStatus.ACTIVE:
+            booking.status = database.TripStatus.CANCELLED
+            booking.cancelled_at = datetime.utcnow()
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Поездка и все связанные бронирования отменены",
+        "cancelled_bookings": len([b for b in trip.bookings if b.status == database.TripStatus.CANCELLED])
+    }
+
+@app.get("/api/trips/{trip_id}/bookings")
+def get_trip_bookings(
+    trip_id: int,
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    db: Session = Depends(database.get_db)
+):
+    """Получить все бронирования поездки (только для водителя)"""
+    trip = db.query(database.DriverTrip).filter(
+        database.DriverTrip.id == trip_id
+    ).first()
+    
+    if not trip:
+        raise HTTPException(status_code=404, detail="Поездка не найдена")
+    
+    # Находим пользователя
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Проверяем права
+    if trip.driver_id != user.id:
+        raise HTTPException(status_code=403, detail="Нет прав для просмотра бронирований этой поездки")
+    
+    bookings = []
+    for booking in trip.bookings:
+        passenger = booking.passenger
+        bookings.append({
+            "id": booking.id,
+            "passenger": {
+                "id": passenger.id,
+                "name": f"{passenger.first_name} {passenger.last_name or ''}".strip(),
+                "phone": passenger.phone,
+                "rating": passenger.passenger_rating
+            },
+            "seats": booking.booked_seats,
+            "price": booking.price_agreed,
+            "status": booking.status.value,
+            "booked_at": booking.booked_at.isoformat() if booking.booked_at else None,
+            "notes": booking.notes
+        })
+    
+    return {
+        "success": True,
+        "count": len(bookings),
+        "bookings": bookings
     }
 
 # =============== УТИЛИТЫ ===============
