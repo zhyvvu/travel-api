@@ -65,6 +65,25 @@ class SearchQuery(BaseModel):
     passengers: int = 1
     max_price: Optional[float] = None
 
+class CarCreate(BaseModel):
+    model: str
+    color: Optional[str] = None
+    license_plate: Optional[str] = None
+    car_type: Optional[str] = None
+    year: Optional[int] = None
+    seats: int = 4
+    is_default: bool = False
+
+class CarUpdate(BaseModel):
+    model: Optional[str] = None
+    color: Optional[str] = None
+    license_plate: Optional[str] = None
+    car_type: Optional[str] = None
+    year: Optional[int] = None
+    seats: Optional[int] = None
+    is_default: Optional[bool] = None
+    is_active: Optional[bool] = None
+
 # Функция для проверки Telegram Web App данных (опционально)
 def verify_telegram_data(init_data: str, bot_token: str) -> bool:
     """Проверка подписи данных от Telegram"""
@@ -780,6 +799,301 @@ def stats(db: Session = Depends(database.get_db)):
         }
     }
     return stats_data
+
+# =============== АВТОМОБИЛИ ПОЛЬЗОВАТЕЛЯ ===============
+
+@app.get("/api/users/cars")
+def get_user_cars(
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    db: Session = Depends(database.get_db)
+):
+    """Получить автомобили пользователя"""
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Получаем автомобили пользователя
+    cars = db.query(UserCar).filter(
+        UserCar.user_id == user.id,
+        UserCar.is_active == True
+    ).order_by(UserCar.is_default.desc(), UserCar.created_at).all()
+    
+    result = []
+    for car in cars:
+        result.append({
+            "id": car.id,
+            "model": car.model,
+            "color": car.color,
+            "license_plate": car.license_plate,
+            "car_type": car.car_type,
+            "year": car.year,
+            "seats": car.seats,
+            "is_default": car.is_default,
+            "created_at": car.created_at.isoformat() if car.created_at else None
+        })
+    
+    return {
+        "success": True,
+        "count": len(result),
+        "cars": result
+    }
+
+@app.post("/api/users/cars")
+def create_user_car(
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    car_data: CarCreate = None,
+    db: Session = Depends(database.get_db)
+):
+    """Добавить автомобиль пользователю"""
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Если это первый автомобиль, делаем его по умолчанию
+    if car_data.is_default:
+        # Снимаем флаг default с других автомобилей
+        existing_cars = db.query(UserCar).filter(
+            UserCar.user_id == user.id,
+            UserCar.is_default == True
+        ).all()
+        
+        for car in existing_cars:
+            car.is_default = False
+    
+    # Создаем автомобиль
+    car = UserCar(
+        user_id=user.id,
+        model=car_data.model,
+        color=car_data.color,
+        license_plate=car_data.license_plate,
+        car_type=car_data.car_type,
+        year=car_data.year,
+        seats=car_data.seats,
+        is_default=car_data.is_default,
+        is_active=True
+    )
+    
+    db.add(car)
+    db.commit()
+    db.refresh(car)
+    
+    # Обновляем флаг has_car у пользователя
+    user.has_car = True
+    if not user.car_model:
+        user.car_model = car_data.model
+        user.car_color = car_data.color
+        user.car_plate = car_data.license_plate
+        user.car_seats = car_data.seats
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Автомобиль добавлен",
+        "car_id": car.id
+    }
+
+@app.put("/api/users/cars/{car_id}")
+def update_user_car(
+    car_id: int,
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    car_data: CarUpdate = None,
+    db: Session = Depends(database.get_db)
+):
+    """Обновить автомобиль пользователя"""
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    car = db.query(UserCar).filter(
+        UserCar.id == car_id,
+        UserCar.user_id == user.id
+    ).first()
+    
+    if not car:
+        raise HTTPException(status_code=404, detail="Автомобиль не найден")
+    
+    # Если устанавливаем как автомобиль по умолчанию
+    if car_data.is_default is True:
+        # Снимаем флаг default с других автомобилей
+        other_cars = db.query(UserCar).filter(
+            UserCar.user_id == user.id,
+            UserCar.id != car_id,
+            UserCar.is_default == True
+        ).all()
+        
+        for other_car in other_cars:
+            other_car.is_default = False
+    
+    # Обновляем поля
+    update_dict = car_data.dict(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(car, key, value)
+    
+    car.updated_at = datetime.utcnow()
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Автомобиль обновлен"
+    }
+
+@app.delete("/api/users/cars/{car_id}")
+def delete_user_car(
+    car_id: int,
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    db: Session = Depends(database.get_db)
+):
+    """Удалить автомобиль пользователя"""
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    car = db.query(UserCar).filter(
+        UserCar.id == car_id,
+        UserCar.user_id == user.id
+    ).first()
+    
+    if not car:
+        raise HTTPException(status_code=404, detail="Автомобиль не найден")
+    
+    # Если удаляем автомобиль по умолчанию, назначаем другой
+    if car.is_default:
+        other_car = db.query(UserCar).filter(
+            UserCar.user_id == user.id,
+            UserCar.id != car_id,
+            UserCar.is_active == True
+        ).first()
+        
+        if other_car:
+            other_car.is_default = True
+    
+    # Мягкое удаление (деактивация)
+    car.is_active = False
+    car.updated_at = datetime.utcnow()
+    
+    # Проверяем, остались ли активные автомобили
+    active_cars = db.query(UserCar).filter(
+        UserCar.user_id == user.id,
+        UserCar.is_active == True
+    ).count()
+    
+    if active_cars == 0:
+        user.has_car = False
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Автомобиль удален"
+    }
+
+@app.get("/api/users/profile-full")
+def get_full_user_profile(
+    telegram_id: int = Query(..., description="Telegram ID пользователя"),
+    db: Session = Depends(database.get_db)
+):
+    """Получить полный профиль пользователя с автомобилями и поездками"""
+    user = db.query(database.User).filter(
+        database.User.telegram_id == telegram_id
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    # Получаем автомобили
+    cars = db.query(UserCar).filter(
+        UserCar.user_id == user.id,
+        UserCar.is_active == True
+    ).order_by(UserCar.is_default.desc()).all()
+    
+    # Получаем поездки как водитель
+    driver_trips = db.query(database.DriverTrip).filter(
+        database.DriverTrip.driver_id == user.id
+    ).order_by(database.DriverTrip.departure_date.desc()).limit(10).all()
+    
+    # Получаем бронирования как пассажир
+    passenger_bookings = db.query(database.Booking).filter(
+        database.Booking.passenger_id == user.id
+    ).order_by(database.Booking.booked_at.desc()).limit(10).all()
+    
+    # Формируем результат
+    cars_result = []
+    for car in cars:
+        cars_result.append({
+            "id": car.id,
+            "model": car.model,
+            "color": car.color,
+            "license_plate": car.license_plate,
+            "car_type": car.car_type,
+            "year": car.year,
+            "seats": car.seats,
+            "is_default": car.is_default
+        })
+    
+    driver_trips_result = []
+    for trip in driver_trips:
+        driver_trips_result.append({
+            "id": trip.id,
+            "from": trip.start_address,
+            "to": trip.finish_address,
+            "date": trip.departure_date.strftime("%d.%m.%Y %H:%M"),
+            "seats": trip.available_seats,
+            "price": trip.price_per_seat,
+            "status": trip.status.value,
+            "passengers_count": len(trip.bookings)
+        })
+    
+    passenger_trips_result = []
+    for booking in passenger_bookings:
+        trip = booking.driver_trip
+        passenger_trips_result.append({
+            "id": booking.id,
+            "trip_id": trip.id,
+            "driver_name": f"{trip.driver.first_name} {trip.driver.last_name or ''}".strip(),
+            "from": trip.start_address,
+            "to": trip.finish_address,
+            "date": trip.departure_date.strftime("%d.%m.%Y %H:%M"),
+            "seats": booking.booked_seats,
+            "price": booking.price_agreed or trip.price_per_seat,
+            "status": booking.status.value
+        })
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "telegram_id": user.telegram_id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "username": user.username,
+            "phone": user.phone,
+            "role": user.role,
+            "ratings": {
+                "driver": user.driver_rating,
+                "passenger": user.passenger_rating
+            },
+            "stats": {
+                "driver_trips": user.total_driver_trips,
+                "passenger_trips": user.total_passenger_trips
+            }
+        },
+        "cars": cars_result,
+        "driver_trips": driver_trips_result,
+        "passenger_trips": passenger_trips_result
+    }
 
 # =============== УТИЛИТЫ ===============
 
