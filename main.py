@@ -14,6 +14,8 @@ import hashlib
 import hmac
 import os
 
+UserCar = database.UserCar
+
 # Telegram Bot Token для верификации данных (если нужно)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
