@@ -74,6 +74,7 @@ class User(Base):
     reviews_received = relationship("Review", foreign_keys="Review.reviewed_user_id", back_populates="reviewed_user")
     reviews_given = relationship("Review", foreign_keys="Review.reviewer_user_id", back_populates="reviewer")
     bookings_as_passenger = relationship("Booking", foreign_keys="Booking.passenger_id", back_populates="passenger")
+    cars = relationship("UserCar", back_populates="user", cascade="all, delete-orphan")
 
 # --- Таблица поездок водителей ---
 class DriverTrip(Base):
@@ -236,11 +237,35 @@ class Message(Base):
     sender = relationship("User", foreign_keys=[sender_id])
     receiver = relationship("User", foreign_keys=[receiver_id])
 
+# Модель автомобиля пользователя
+class UserCar(Base):
+    __tablename__ = "user_cars"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    model = Column(String(100), nullable=False)
+    color = Column(String(50))
+    license_plate = Column(String(20), unique=True)
+    car_type = Column(String(20))
+    year = Column(Integer)
+    seats = Column(Integer, default=4)
+    
+    is_default = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    user = relationship("User", back_populates="cars")
+
 # Создаем таблицы
 def create_tables():
+    """Создаем все таблицы включая user_cars"""
     Base.metadata.create_all(bind=engine)
     print("✅ Таблицы созданы:")
     print("   - users (пользователи)")
+    print("   - user_cars (автомобили пользователей)")  # ← ДОБАВЬТЕ ЭТУ СТРОЧКУ
     print("   - driver_trips (поездки водителей)")
     print("   - passenger_trips (запросы пассажиров)")
     print("   - bookings (бронирования)")
