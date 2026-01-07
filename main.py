@@ -1096,6 +1096,30 @@ def get_full_user_profile(
         "driver_trips": driver_trips_result,
         "passenger_trips": passenger_trips_result
     }
+
+# В main.py добавьте:
+
+@app.get("/api/debug/users")
+def debug_users(db: Session = Depends(database.get_db)):
+    """Показать всех пользователей (для отладки)"""
+    users = db.query(database.User).all()
+    
+    result = []
+    for user in users:
+        result.append({
+            "id": user.id,
+            "telegram_id": user.telegram_id,
+            "first_name": user.first_name,
+            "username": user.username,
+            "registration_date": user.registration_date.isoformat() if user.registration_date else None
+        })
+    
+    return {
+        "success": True,
+        "count": len(result),
+        "users": result
+    }
+
 # =============== УТИЛИТЫ ===============
 
 # Создаем отдельный файл для функции извлечения города
