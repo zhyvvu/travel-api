@@ -5,7 +5,7 @@ from sqlalchemy import desc, or_, and_, func
 from datetime import datetime, timedelta
 import database
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -185,18 +185,39 @@ def home():
 # =============== TELEGRAM АВТОРИЗАЦИЯ ===============
 
 @app.post("/api/auth/telegram")
-async def telegram_auth(login_data: LoginRequest, db: Session = Depends(database.get_db)):
-    """Авторизация через Telegram Web App"""
+async def telegram_auth(login_data: Dict[str, Any] = None, db: Session = Depends(database.get_db)):
+    """Авторизация через Telegram Web App - упрощенная версия для разных форматов данных"""
     try:
-        # Получаем данные пользователя
-        if login_data.user:
-            user_data = login_data.user
-        else:
-            # Если данные пришли в initData, можно их распарсить
-            # В данном примере используем готового пользователя
+        print(f"🔐 Auth request received. Data type: {type(login_data)}")
+        print(f"🔐 Auth request data: {login_data}")
+        
+        # Пробуем разные форматы данных
+        user_data = None
+        
+        # Формат 1: данные в ключе "user" (старый фронтенд)
+        if login_data and 'user' in login_data:
+            user_data = login_data['user']
+            print(f"✅ Using 'user' key format: {user_data}")
+        
+        # Формат 2: данные напрямую в корне (новый фронтенд)
+        elif login_data and 'id' in login_data and 'first_name' in login_data:
+            user_data = login_data
+            print(f"✅ Using direct user object format: {user_data}")
+        
+        # Формат 3: данные в старом формате LoginRequest
+        elif login_data and 'initData' in login_data and 'user' in login_data:
+            user_data = login_data['user']
+            print(f"✅ Using LoginRequest format")
+        
+        if not user_data:
+            print(f"❌ No user data found in request")
             raise HTTPException(status_code=400, detail="Необходимы данные пользователя")
         
-        telegram_id = user_data.id
+        telegram_id = user_data.get('id')
+        if not telegram_id:
+            raise HTTPException(status_code=400, detail="Отсутствует ID пользователя")
+        
+        print(f"🆔 Telegram ID: {telegram_id}")
         
         # Проверяем существование пользователя
         user = db.query(database.User).filter(
@@ -207,10 +228,10 @@ async def telegram_auth(login_data: LoginRequest, db: Session = Depends(database
             # Создаем нового пользователя
             user = database.User(
                 telegram_id=telegram_id,
-                username=user_data.username,
-                first_name=user_data.first_name,
-                last_name=user_data.last_name,
-                language_code=user_data.language_code,
+                username=user_data.get('username'),
+                first_name=user_data.get('first_name', ''),
+                last_name=user_data.get('last_name'),
+                language_code=user_data.get('language_code', 'ru'),
                 is_bot=False,
                 registration_date=datetime.utcnow(),
                 last_active=datetime.utcnow(),
@@ -220,17 +241,19 @@ async def telegram_auth(login_data: LoginRequest, db: Session = Depends(database
             db.commit()
             db.refresh(user)
             message = "Новый пользователь зарегистрирован"
+            print(f"✅ New user created: {user.first_name} (ID: {user.id})")
         else:
             # Обновляем данные существующего пользователя
-            user.username = user_data.username or user.username
-            user.first_name = user_data.first_name
-            user.last_name = user_data.last_name or user.last_name
-            user.language_code = user_data.language_code or user.language_code
+            user.username = user_data.get('username') or user.username
+            user.first_name = user_data.get('first_name', user.first_name)
+            user.last_name = user_data.get('last_name') or user.last_name
+            user.language_code = user_data.get('language_code') or user.language_code
             user.last_active = datetime.utcnow()
             db.commit()
             message = "Пользователь авторизован"
+            print(f"✅ User updated: {user.first_name} (ID: {user.id})")
         
-        # Создаем токен сессии (можно использовать JWT, но для простоты вернем telegram_id)
+        # Создаем токен сессии
         session_token = f"telegram_{telegram_id}_{datetime.utcnow().timestamp()}"
         
         return {
@@ -248,9 +271,9 @@ async def telegram_auth(login_data: LoginRequest, db: Session = Depends(database
                     "model": user.car_model,
                     "color": user.car_color,
                     "plate": user.car_plate,
-                    "type": user.car_type,
+                    "type": user.car_type.value if user.car_type else None,
                     "seats": user.car_seats
-                },
+                } if user.has_car else None,
                 "ratings": {
                     "driver": user.driver_rating,
                     "passenger": user.passenger_rating
@@ -259,12 +282,17 @@ async def telegram_auth(login_data: LoginRequest, db: Session = Depends(database
                     "driver_trips": user.total_driver_trips,
                     "passenger_trips": user.total_passenger_trips
                 },
-                "role": user.role,
+                "role": user.role.value if user.role else "passenger",
                 "phone": user.phone
             }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"❌ Auth error details: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Ошибка авторизации: {str(e)}")
 
@@ -298,7 +326,7 @@ def get_current_user(
                 "model": user.car_model,
                 "color": user.car_color,
                 "plate": user.car_plate,
-                "type": user.car_type,
+                "type": user.car_type.value if user.car_type else None,
                 "seats": user.car_seats
             } if user.has_car else None,
             "ratings": {
@@ -309,7 +337,7 @@ def get_current_user(
                 "driver_trips": user.total_driver_trips,
                 "passenger_trips": user.total_passenger_trips
             },
-            "role": user.role,
+            "role": user.role.value if user.role else None,
             "phone": user.phone,
             "registration_date": user.registration_date.isoformat() if user.registration_date else None,
             "last_active": user.last_active.isoformat() if user.last_active else None
@@ -364,7 +392,7 @@ def update_user_profile(
             "car_color": user.car_color,
             "car_plate": user.car_plate,
             "phone": user.phone,
-            "role": user.role
+            "role": user.role.value if user.role else None
         }
     }
 
@@ -1008,7 +1036,7 @@ def get_full_user_profile(
     db: Session = Depends(database.get_db)
 ):
     """Получить полный профиль пользователя с автомобилями и поездками"""
-    print(f"📱 Запрос профиля для telegram_id={telegram_id}")  # ← ДЛЯ ОТЛАДКИ
+    print(f"📱 Запрос профиля для telegram_id={telegram_id}")
     
     user = db.query(database.User).filter(
         database.User.telegram_id == telegram_id
@@ -1115,7 +1143,6 @@ def get_full_user_profile(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
-# В main.py добавьте:
 
 @app.get("/api/debug/users")
 def debug_users(db: Session = Depends(database.get_db)):
