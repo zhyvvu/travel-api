@@ -1008,95 +1008,113 @@ def get_full_user_profile(
     db: Session = Depends(database.get_db)
 ):
     """Получить полный профиль пользователя с автомобилями и поездками"""
+    print(f"📱 Запрос профиля для telegram_id={telegram_id}")  # ← ДЛЯ ОТЛАДКИ
+    
     user = db.query(database.User).filter(
         database.User.telegram_id == telegram_id
     ).first()
     
     if not user:
+        print(f"❌ Пользователь {telegram_id} не найден")
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    # Получаем автомобили
-    cars = db.query(UserCar).filter(
-        UserCar.user_id == user.id,
-        UserCar.is_active == True
-    ).order_by(UserCar.is_default.desc()).all()
+    print(f"✅ Найден пользователь: {user.first_name} {user.last_name}")
     
-    # Получаем поездки как водитель
-    driver_trips = db.query(database.DriverTrip).filter(
-        database.DriverTrip.driver_id == user.id
-    ).order_by(database.DriverTrip.departure_date.desc()).limit(10).all()
-    
-    # Получаем бронирования как пассажир
-    passenger_bookings = db.query(database.Booking).filter(
-        database.Booking.passenger_id == user.id
-    ).order_by(database.Booking.booked_at.desc()).limit(10).all()
-    
-    # Формируем результат
-    cars_result = []
-    for car in cars:
-        cars_result.append({
-            "id": car.id,
-            "model": car.model,
-            "color": car.color,
-            "license_plate": car.license_plate,
-            "car_type": car.car_type,
-            "year": car.year,
-            "seats": car.seats,
-            "is_default": car.is_default
-        })
-    
-    driver_trips_result = []
-    for trip in driver_trips:
-        driver_trips_result.append({
-            "id": trip.id,
-            "from": trip.start_address,
-            "to": trip.finish_address,
-            "date": trip.departure_date.strftime("%d.%m.%Y %H:%M"),
-            "seats": trip.available_seats,
-            "price": trip.price_per_seat,
-            "status": trip.status.value,
-            "passengers_count": len(trip.bookings)
-        })
-    
-    passenger_trips_result = []
-    for booking in passenger_bookings:
-        trip = booking.driver_trip
-        passenger_trips_result.append({
-            "id": booking.id,
-            "trip_id": trip.id,
-            "driver_name": f"{trip.driver.first_name} {trip.driver.last_name or ''}".strip(),
-            "from": trip.start_address,
-            "to": trip.finish_address,
-            "date": trip.departure_date.strftime("%d.%m.%Y %H:%M"),
-            "seats": booking.booked_seats,
-            "price": booking.price_agreed or trip.price_per_seat,
-            "status": booking.status.value
-        })
-    
-    return {
-        "success": True,
-        "user": {
-            "id": user.id,
-            "telegram_id": user.telegram_id,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "username": user.username,
-            "phone": user.phone,
-            "role": user.role.value if user.role else "passenger",  # ← ДОБАВЛЕНО .value
-            "ratings": {
-                "driver": user.driver_rating,
-                "passenger": user.passenger_rating
+    try:
+        # Получаем автомобили
+        cars = db.query(UserCar).filter(
+            UserCar.user_id == user.id,
+            UserCar.is_active == True
+        ).order_by(UserCar.is_default.desc()).all()
+        print(f"🚗 Найдено автомобилей: {len(cars)}")
+        
+        # Получаем поездки как водитель
+        driver_trips = db.query(database.DriverTrip).filter(
+            database.DriverTrip.driver_id == user.id
+        ).order_by(database.DriverTrip.departure_date.desc()).limit(10).all()
+        print(f"🚙 Найдено поездок как водитель: {len(driver_trips)}")
+        
+        # Получаем бронирования как пассажир
+        passenger_bookings = db.query(database.Booking).filter(
+            database.Booking.passenger_id == user.id
+        ).order_by(database.Booking.booked_at.desc()).limit(10).all()
+        print(f"👤 Найдено бронирований как пассажир: {len(passenger_bookings)}")
+        
+        # Формируем результат
+        cars_result = []
+        for car in cars:
+            cars_result.append({
+                "id": car.id,
+                "model": car.model,
+                "color": car.color,
+                "license_plate": car.license_plate,
+                "car_type": car.car_type,
+                "year": car.year,
+                "seats": car.seats,
+                "is_default": car.is_default
+            })
+        
+        driver_trips_result = []
+        for trip in driver_trips:
+            driver_trips_result.append({
+                "id": trip.id,
+                "from": trip.start_address,
+                "to": trip.finish_address,
+                "date": trip.departure_date.strftime("%d.%m.%Y %H:%M"),
+                "seats": trip.available_seats,
+                "price": trip.price_per_seat,
+                "status": trip.status.value if trip.status else "active",
+                "passengers_count": len(trip.bookings) if trip.bookings else 0
+            })
+        
+        passenger_trips_result = []
+        for booking in passenger_bookings:
+            trip = booking.driver_trip
+            if trip and trip.driver:
+                passenger_trips_result.append({
+                    "id": booking.id,
+                    "trip_id": trip.id,
+                    "driver_name": f"{trip.driver.first_name} {trip.driver.last_name or ''}".strip(),
+                    "from": trip.start_address,
+                    "to": trip.finish_address,
+                    "date": trip.departure_date.strftime("%d.%m.%Y %H:%M") if trip.departure_date else "Не указано",
+                    "seats": booking.booked_seats,
+                    "price": booking.price_agreed or (trip.price_per_seat if trip else 0),
+                    "status": booking.status.value if booking.status else "active"
+                })
+        
+        result = {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "telegram_id": user.telegram_id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "username": user.username,
+                "phone": user.phone,
+                "role": user.role.value if user.role else "passenger",
+                "ratings": {
+                    "driver": user.driver_rating,
+                    "passenger": user.passenger_rating
+                },
+                "stats": {
+                    "driver_trips": user.total_driver_trips,
+                    "passenger_trips": user.total_passenger_trips
+                }
             },
-            "stats": {
-                "driver_trips": user.total_driver_trips,
-                "passenger_trips": user.total_passenger_trips
-            }
-        },
-        "cars": cars_result,
-        "driver_trips": driver_trips_result,
-        "passenger_trips": passenger_trips_result
-    }
-
+            "cars": cars_result,
+            "driver_trips": driver_trips_result,
+            "passenger_trips": passenger_trips_result
+        }
+        
+        print(f"✅ Профиль сформирован успешно")
+        return result
+        
+    except Exception as e:
+        print(f"❌ Ошибка при формировании профиля: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 # В main.py добавьте:
 
 @app.get("/api/debug/users")
