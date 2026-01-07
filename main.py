@@ -1082,7 +1082,7 @@ def get_full_user_profile(
             "last_name": user.last_name,
             "username": user.username,
             "phone": user.phone,
-            "role": user.role,
+            "role": user.role.value if user.role else "passenger",  # ← ДОБАВЛЕНО .value
             "ratings": {
                 "driver": user.driver_rating,
                 "passenger": user.passenger_rating
@@ -1096,7 +1096,6 @@ def get_full_user_profile(
         "driver_trips": driver_trips_result,
         "passenger_trips": passenger_trips_result
     }
-
 # =============== УТИЛИТЫ ===============
 
 # Создаем отдельный файл для функции извлечения города
