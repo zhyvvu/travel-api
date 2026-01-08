@@ -133,6 +133,10 @@ def verify_telegram_data(init_data: str, bot_token: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+        # Создаем таблицы если их нет
+    print("🔄 Создание таблиц...")
+    database.Base.metadata.create_all(bind=database.engine)
+    print("✅ Таблицы созданы")
     # Таблицы создаются через миграции (alembic)
     print("✅ Сервер запущен с миграциями Alembic")
     yield
@@ -149,21 +153,10 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "https://zhyvvu.github.io",
-        "https://*.github.io",
-        "https://telegram.org",
-        "https://*.telegram.org",
-        "http://localhost:*",
-        "http://127.0.0.1:*",
-        "*"
-    ],
+    allow_origins=["*"],  # Разрешаем все источники для простоты
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"]
 )
 
 # Middleware для обработки Telegram данных

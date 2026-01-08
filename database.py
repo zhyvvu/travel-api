@@ -18,7 +18,12 @@ elif DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # Создаем движок базы данных
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,  # Проверка соединения перед использованием
+    pool_recycle=300,    # Переподключение каждые 5 минут
+    connect_args={"connect_timeout": 10}  # Таймаут подключения
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -273,3 +278,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Функция для создания таблиц (для использования в main.py)
+def create_tables():
+    """Создать все таблицы в базе данных"""
+    Base.metadata.create_all(bind=engine)
+    print("✅ Все таблицы созданы успешно")
