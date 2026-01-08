@@ -133,11 +133,8 @@ def verify_telegram_data(init_data: str, bot_token: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-        # Создаем таблицы если их нет
-    print("🔄 Создание таблиц...")
-    database.Base.metadata.create_all(bind=database.engine)
-    print("✅ Таблицы созданы")
-    # Таблицы создаются через миграции (alembic)
+    # Таблицы создаются через миграции Alembic
+    # (выполняется в render.yaml на этапе сборки)
     print("✅ Сервер запущен с миграциями Alembic")
     yield
     # При остановке

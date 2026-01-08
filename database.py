@@ -279,8 +279,3 @@ def get_db():
     finally:
         db.close()
 
-# Функция для создания таблиц (для использования в main.py)
-def create_tables():
-    """Создать все таблицы в базе данных"""
-    Base.metadata.create_all(bind=engine)
-    print("✅ Все таблицы созданы успешно")
