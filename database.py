@@ -1,4 +1,4 @@
-# database.py - ВЕРСИЯ С ПОДДЕРЖКОЙ МИГРАЦИЙ
+# database.py - ИСПРАВЛЕННАЯ ВЕРСИЯ
 import os
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, ForeignKey, Text, Enum, JSON
 from sqlalchemy.ext.declarative import declarative_base
@@ -22,7 +22,7 @@ engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,  # Проверка соединения перед использованием
     pool_recycle=300,    # Переподключение каждые 5 минут
-    connect_args={"connect_timeout": 10}  # Таймаут подключения
+    # Убрали connect_args={"connect_timeout": 10} - не работает с PostgreSQL
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
