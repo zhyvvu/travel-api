@@ -1,4 +1,4 @@
-# database.py - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ ДЛЯ TELEGRAM WEB APP
+# database.py - ВЕРСИЯ С ПОДДЕРЖКОЙ МИГРАЦИЙ
 import os
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, ForeignKey, Text, Enum, JSON
 from sqlalchemy.ext.declarative import declarative_base
@@ -7,10 +7,17 @@ from datetime import datetime
 import enum
 import json
 
-# SQLite база
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./travel_companion.db")
-if DATABASE_URL.startswith("postgres://"):
+# Получаем URL базы данных из переменных окружения Render
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Если нет DATABASE_URL (локальная разработка), используем SQLite
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///./travel_companion.db"
+elif DATABASE_URL.startswith("postgres://"):
+    # SQLAlchemy требует postgresql:// вместо postgres://
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Создаем движок базы данных
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -259,54 +266,10 @@ class UserCar(Base):
     
     user = relationship("User", back_populates="cars")
 
-# Создаем таблицы
-def create_tables():
-    """Создаем все таблицы включая user_cars"""
-    Base.metadata.create_all(bind=engine)
-    print("✅ Таблицы созданы:")
-    print("   - users (пользователи)")
-    print("   - user_cars (автомобили пользователей)")  # ← ДОБАВЬТЕ ЭТУ СТРОЧКУ
-    print("   - driver_trips (поездки водителей)")
-    print("   - passenger_trips (запросы пассажиров)")
-    print("   - bookings (бронирования)")
-    print("   - reviews (отзывы)")
-    print("   - messages (сообщения)")
-
 def get_db():
+    """Получить сессию базы данных"""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-# Функция для создания тестовых данных (оставляем на случай ручного тестирования)
-def create_test_data():
-    db = SessionLocal()
-    try:
-        print("📊 Создание тестовых данных...")
-        
-        # Проверяем, есть ли уже пользователи
-        if db.query(User).count() == 0:
-            # Добавляем тестового водителя
-            driver = User(
-                telegram_id=1001,
-                username="test_driver",
-                first_name="Иван",
-                last_name="Тестовый",
-                phone="+79161234567",
-                has_car=True,
-                car_model="Toyota Camry",
-                car_color="Черный",
-                car_plate="А123АА777",
-                car_type=CarType.SEDAN,
-                car_seats=4,
-                role=UserRole.DRIVER
-            )
-            db.add(driver)
-            db.commit()
-            print("✅ Тестовый водитель создан")
-            
-        db.close()
-    except Exception as e:
-        print(f"⚠️  Ошибка создания тестовых данных: {e}")
-        db.rollback()
