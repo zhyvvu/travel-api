@@ -6,7 +6,9 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: |
-      alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 10000
+        alembic upgrade head
+        python minimal_bot.py &
+        uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: DATABASE_URL
         fromDatabase:
