@@ -10,13 +10,26 @@ sys.path.append(os.getcwd())
 
 # Импортируем нашу базу данных
 from database import Base
-from database import DATABASE_URL
+
+# Получаем URL базы данных из переменных окружения
+def get_database_url():
+    database_url = os.getenv("DATABASE_URL")
+    
+    # Если нет DATABASE_URL (локальная разработка), используем SQLite
+    if not database_url:
+        return "sqlite:///./travel_companion.db"
+    
+    # SQLAlchemy требует postgresql:// вместо postgres://
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+    
+    return database_url
 
 # Получаем конфигурацию Alembic
 config = context.config
 
 # Устанавливаем URL базы данных
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+config.set_main_option("sqlalchemy.url", get_database_url())
 
 # Настройка логов
 if config.config_file_name is not None:

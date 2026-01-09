@@ -1483,6 +1483,15 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from extract_city import extract_city
 
+@app.get("/health")
+async def health_check(db: Session = Depends(get_db)):
+    try:
+        # Простой запрос к базе
+        result = db.execute("SELECT 1").fetchone()
+        return {"status": "healthy", "database": "connected", "url": str(db.bind.url)}
+    except Exception as e:
+        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)

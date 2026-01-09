@@ -1,4 +1,4 @@
-# database.py - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# database.py - ИСПРАВЛЕННАЯ ВЕРСИЯ ДЛЯ PostgreSQL НА RENDER
 import os
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, ForeignKey, Text, Enum, JSON
 from sqlalchemy.ext.declarative import declarative_base
@@ -13,16 +13,20 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # Если нет DATABASE_URL (локальная разработка), используем SQLite
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./travel_companion.db"
+    connect_args = {"check_same_thread": False}  # Только для SQLite
 elif DATABASE_URL.startswith("postgres://"):
     # SQLAlchemy требует postgresql:// вместо postgres://
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    connect_args = {}  # Для PostgreSQL пустой
+else:
+    connect_args = {}
 
 # Создаем движок базы данных
 engine = create_engine(
     DATABASE_URL,
+    connect_args=connect_args,  # Ключевое исправление: добавляем connect_args
     pool_pre_ping=True,  # Проверка соединения перед использованием
     pool_recycle=300,    # Переподключение каждые 5 минут
-    # Убрали connect_args={"connect_timeout": 10} - не работает с PostgreSQL
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -149,6 +153,7 @@ class PassengerTrip(Base):
     # Дата и время
     desired_date = Column(DateTime, nullable=False)
     desired_time = Column(String(10))  # "HH:MM"
+    time_flexibility = Column(Integer, default=30)  # ± минуты
     time_flexibility = Column(Integer, default=30)  # ± минуты
     
     # Локации
