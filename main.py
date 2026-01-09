@@ -1,5 +1,5 @@
 # main.py - ОПТИМИЗИРОВАННЫЙ API ДЛЯ TELEGRAM WEB APP
-from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, and_, func
 from datetime import datetime, timedelta
@@ -13,6 +13,11 @@ import json
 import hashlib
 import hmac
 import os
+import sys
+
+# Добавляем текущую директорию в путь для импорта
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from extract_city import extract_city
 
 UserCar = database.UserCar
 
@@ -571,15 +576,11 @@ def create_trip(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    #if not user.has_car:
-    #    raise HTTPException(status_code=400, detail="Для создания поездки нужно добавить автомобиль в профиле")
-    
     # Создаем поездку
     trip_dict = trip_data.dict()
     trip_dict["driver_id"] = user.id
     
     # Автоматически определяем города
-    from extract_city import extract_city
     trip_dict["start_city"] = extract_city(trip_data.start_address)
     trip_dict["finish_city"] = extract_city(trip_data.finish_address)
     
@@ -795,24 +796,9 @@ def cancel_booking(
 
 # =============== СТАТИСТИКА И СИСТЕМА ===============
 
-@app.get("/health")
-def health(db: Session = Depends(database.get_db)):
-    try:
-        db.execute("SELECT 1")
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "timestamp": datetime.now().isoformat()
-        }
-    except:
-        return {
-            "status": "unhealthy",
-            "database": "disconnected",
-            "timestamp": datetime.now().isoformat()
-        }
-
 @app.get("/stats")
 def stats(db: Session = Depends(database.get_db)):
+    """Статистика системы"""
     stats_data = {
         "database": "SQLite (travel_companion.db)",
         "timestamp": datetime.now().isoformat(),
@@ -1332,13 +1318,11 @@ def update_driver_trip(
         
         # Обновляем адреса
         if update_data.start_address is not None:
-            from extract_city import extract_city
             trip.start_address = update_data.start_address
             trip.start_city = extract_city(update_data.start_address)
             changes["start_address"] = "обновлен"
         
         if update_data.finish_address is not None:
-            from extract_city import extract_city
             trip.finish_address = update_data.finish_address
             trip.finish_city = extract_city(update_data.finish_address)
             changes["finish_address"] = "обновлен"
@@ -1474,24 +1458,29 @@ def get_trip_bookings(
         "bookings": bookings
     }
 
-# =============== УТИЛИТЫ ===============
-
-# Создаем отдельный файл для функции извлечения города
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from extract_city import extract_city
+# =============== HEALTH CHECK ===============
 
 @app.get("/health")
-async def health_check(db: Session = Depends(get_db)):
+def health_check(db: Session = Depends(database.get_db)):
+    """Проверка состояния API и базы данных"""
     try:
         # Простой запрос к базе
         result = db.execute("SELECT 1").fetchone()
-        return {"status": "healthy", "database": "connected", "url": str(db.bind.url)}
+        return {
+            "status": "healthy", 
+            "database": "connected",
+            "timestamp": datetime.utcnow().isoformat()
+        }
     except Exception as e:
-        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+        return {
+            "status": "unhealthy", 
+            "database": "disconnected", 
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
+# Точка входа
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
