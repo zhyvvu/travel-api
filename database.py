@@ -153,8 +153,7 @@ class PassengerTrip(Base):
     # Дата и время
     desired_date = Column(DateTime, nullable=False)
     desired_time = Column(String(10))  # "HH:MM"
-    time_flexibility = Column(Integer, default=30)  # ± минуты
-    time_flexibility = Column(Integer, default=30)  # ± минуты
+    time_flexibility = Column(Integer, default=30)  # ± минуты  # <-- ТОЛЬКО ОДИН РАЗ!
     
     # Локации
     start_address = Column(String(500), nullable=False)

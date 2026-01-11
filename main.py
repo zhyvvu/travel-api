@@ -104,6 +104,15 @@ class DriverTripUpdate(BaseModel):
     start_address: Optional[str] = None
     finish_address: Optional[str] = None
 
+
+def main():
+    # Создаем таблицы если их нет
+    try:
+        database.Base.metadata.create_all(bind=database.engine)
+        logger.info("✅ Таблицы базы данных созданы/проверены")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания таблиц: {e}")
+
 # Функция для проверки Telegram Web App данных (опционально)
 def verify_telegram_data(init_data: str, bot_token: str) -> bool:
     """Проверка подписи данных от Telegram"""

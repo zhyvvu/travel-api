@@ -2,18 +2,158 @@
 import logging
 import os
 from dotenv import load_dotenv
-from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 from datetime import datetime
 import sys
+import traceback
+from sqlalchemy import text
 
 # Добавляем текущую директорию в путь для импорта
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Импортируем нашу базу данных
-import database
-from sqlalchemy.orm import Session
+# Проверяем наличие database.py
+database_path = os.path.join(os.path.dirname(__file__), 'database.py')
+if not os.path.exists(database_path):
+    logging.warning(f"⚠️  Файл database.py не найден по пути: {database_path}")
+    # Создаем простую заглушку для базы данных
+    class DatabaseStub:
+        class User:
+            telegram_id = None
+            username = None
+            first_name = None
+            last_name = None
+            language_code = None
+            is_bot = None
+            registration_date = None
+            last_active = None
+            role = None
+            has_car = False
+            car_model = None
+            car_color = None
+            car_plate = None
+            car_type = None
+            car_seats = None
+            phone = None
+            total_driver_trips = 0
+            total_passenger_trips = 0
+            driver_rating = 0.0
+            passenger_rating = 0.0
+        
+        class UserRole:
+            PASSENGER = "passenger"
+            DRIVER = "driver"
+        
+        class DriverTrip:
+            id = None
+            driver_id = None
+            driver = None
+            start_address = ""
+            finish_address = ""
+            departure_date = None
+            available_seats = 0
+            price_per_seat = 0
+            status = None
+            bookings = []
+        
+        class TripStatus:
+            ACTIVE = "active"
+            COMPLETED = "completed"
+            CANCELLED = "cancelled"
+        
+        class Booking:
+            id = None
+            passenger_id = None
+            driver_trip_id = None
+            driver_trip = None
+            booked_seats = 0
+            price_agreed = 0
+            status = None
+            booked_at = None
+        
+        class engine:
+            pass
+        
+        @staticmethod
+        def Base():
+            class BaseStub:
+                metadata = type('metadata', (), {'create_all': lambda x: None})()
+            return BaseStub()
+    
+    database = DatabaseStub()
+    logging.info("✅ Используется заглушка для базы данных")
+else:
+    try:
+        import database
+        logging.info("✅ База данных успешно импортирована")
+    except Exception as e:
+        logging.error(f"❌ Ошибка импорта database.py: {e}")
+        # Используем заглушку при ошибке импорта
+        class DatabaseStub:
+            class User:
+                telegram_id = None
+                username = None
+                first_name = None
+                last_name = None
+                language_code = None
+                is_bot = None
+                registration_date = None
+                last_active = None
+                role = None
+                has_car = False
+                car_model = None
+                car_color = None
+                car_plate = None
+                car_type = None
+                car_seats = None
+                phone = None
+                total_driver_trips = 0
+                total_passenger_trips = 0
+                driver_rating = 0.0
+                passenger_rating = 0.0
+            
+            class UserRole:
+                PASSENGER = "passenger"
+                DRIVER = "driver"
+            
+            class DriverTrip:
+                id = None
+                driver_id = None
+                driver = None
+                start_address = ""
+                finish_address = ""
+                departure_date = None
+                available_seats = 0
+                price_per_seat = 0
+                status = None
+                bookings = []
+            
+            class TripStatus:
+                ACTIVE = "active"
+                COMPLETED = "completed"
+                CANCELLED = "cancelled"
+            
+            class Booking:
+                id = None
+                passenger_id = None
+                driver_trip_id = None
+                driver_trip = None
+                booked_seats = 0
+                price_agreed = 0
+                status = None
+                booked_at = None
+            
+            class engine:
+                pass
+            
+            @staticmethod
+            def Base():
+                class BaseStub:
+                    metadata = type('metadata', (), {'create_all': lambda x: None})()
+                return BaseStub()
+        
+        database = DatabaseStub()
+        logging.info("✅ Используется заглушка для базы данных из-за ошибки импорта")
 
 load_dotenv()
 
@@ -25,10 +165,12 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 # Проверка обязательных переменных
 if not BOT_TOKEN:
     logging.critical("❌ TELEGRAM_BOT_TOKEN не установлен в переменных окружения!")
+    print("❌ ОШИБКА: TELEGRAM_BOT_TOKEN не установлен!")
+    print("   Создайте файл .env и добавьте TELEGRAM_BOT_TOKEN=ваш_токен")
     exit(1)
 
 if not DATABASE_URL:
-    logging.warning("⚠️  DATABASE_URL не установлен. Бот будет использовать локальную SQLite")
+    logging.warning("⚠️  DATABASE_URL не установлен. Бот будет работать в упрощенном режиме")
 
 # =============== ЛОГИРОВАНИЕ ===============
 logging.basicConfig(
@@ -44,64 +186,146 @@ logger = logging.getLogger(__name__)
 # =============== УТИЛИТЫ ===============
 def get_db_session():
     """Получить сессию базы данных"""
-    return Session(database.engine)
+    try:
+        from sqlalchemy.orm import Session
+        return Session(database.engine)
+    except:
+        return None
 
-# =============== ФУНКЦИИ БОТА ===============
+# =============== ОБРАБОТЧИКИ ===============
+async def help_no_db_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки помощи при отсутствии БД"""
+    query = update.callback_query
+    await query.answer()
+    
+    help_text = """
+🆘 *Режим без базы данных*
+
+Бот работает в ограниченном режиме из-за проблем с подключением к базе данных.
+
+*Что доступно:*
+• Открытие Web App приложения
+• Основные команды (/help, /about, /app)
+• Общение с ботом
+
+*Что недоступно:*
+• Сохранение профиля
+• Создание и поиск поездок
+• Статистика
+• История поездок
+
+*Решение:*
+1. Проверьте подключение к интернету
+2. Убедитесь, что база данных запущена
+3. Перезапустите бота позже
+
+Для продолжения используйте кнопку "Открыть Travel Companion" ниже.
+"""
+    
+    keyboard = [[
+        InlineKeyboardButton(
+            "🚗 Открыть Travel Companion",
+            web_app=WebAppInfo(url=MINI_APP_URL)
+        )
+    ]]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        help_text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start - приветствие и кнопка Mini App"""
     user = update.effective_user
     
-    # Получаем сессию базы данных
-    db = get_db_session()
-    
     try:
         logger.info(f"Пользователь {user.id} ({user.username}) запустил бота")
         
-        # Проверяем, есть ли пользователь в базе
-        existing_user = db.query(database.User).filter(
-            database.User.telegram_id == user.id
-        ).first()
+        welcome_msg = ""
+        db = None
         
-        if not existing_user:
-            # Создаем нового пользователя
-            new_user = database.User(
-                telegram_id=user.id,
-                username=user.username,
-                first_name=user.first_name or "",
-                last_name=user.last_name,
-                language_code=user.language_code,
-                is_bot=user.is_bot,
-                registration_date=datetime.utcnow(),
-                last_active=datetime.utcnow(),
-                role=database.UserRole.PASSENGER
-            )
-            db.add(new_user)
-            db.commit()
-            welcome_msg = "🎉 Добро пожаловать! Вы зарегистрированы в системе!"
+        # Проверяем доступность базы данных из контекста бота
+        db_available = False
+        try:
+            if context.bot_data and 'db_available' in context.bot_data:
+                db_available = context.bot_data['db_available']
+        except:
+            pass
+        
+        if db_available:
+            try:
+                db = get_db_session()
+                if db is None:
+                    raise Exception("Сессия БД не создана")
+                
+                # Проверяем, есть ли пользователь в базе
+                existing_user = db.query(database.User).filter(
+                    database.User.telegram_id == user.id
+                ).first()
+                
+                if not existing_user:
+                    # Создаем нового пользователя
+                    new_user = database.User(
+                        telegram_id=user.id,
+                        username=user.username,
+                        first_name=user.first_name or "",
+                        last_name=user.last_name or "",
+                        language_code=user.language_code or "ru",
+                        is_bot=user.is_bot or False,
+                        registration_date=datetime.utcnow(),
+                        last_active=datetime.utcnow(),
+                        role=getattr(database, 'UserRole', type('obj', (), {'PASSENGER': 'passenger'})()).PASSENGER
+                    )
+                    db.add(new_user)
+                    db.commit()
+                    welcome_msg = "🎉 Добро пожаловать! Вы зарегистрированы в системе!"
+                    logger.info(f"Создан новый пользователь: {user.id}")
+                else:
+                    # Обновляем время последней активности
+                    existing_user.last_active = datetime.utcnow()
+                    existing_user.first_name = user.first_name or existing_user.first_name
+                    existing_user.last_name = user.last_name or existing_user.last_name
+                    existing_user.username = user.username or existing_user.username
+                    db.commit()
+                    welcome_msg = "👋 С возвращением!"
+                    logger.info(f"Пользователь обновлен: {user.id}")
+                    
+            except Exception as db_error:
+                logger.error(f"Ошибка работы с БД в start: {db_error}")
+                welcome_msg = "👋 Добро пожаловать! (ограниченный режим - БД недоступна)"
+                db_available = False
+            finally:
+                if db:
+                    try:
+                        db.close()
+                    except:
+                        pass
         else:
-            # Обновляем время последней активности
-            existing_user.last_active = datetime.utcnow()
-            db.commit()
-            welcome_msg = "👋 С возвращением!"
+            welcome_msg = "👋 Добро пожаловать! (режим без базы данных)"
+            logger.info(f"Пользователь {user.id} - режим без БД")
         
+        # УПРОЩЕННЫЙ ТЕКСТ БЕЗ MARKDOWN (или с исправленной разметкой)
         welcome_text = f"""
-👋 Привет, {user.first_name}! {welcome_msg}
+👋 Привет, {user.first_name or 'друг'}! {welcome_msg}
 
-🚗 *Travel Companion* — сервис поиска попутчиков для путешествий!
+🚗 Travel Companion — сервис поиска попутчиков для путешествий!
 
-✨ *Что умеет бот:*
+✨ Что умеет бот:
 • 🔍 Найти поездку с попутчиками
 • 🚗 Создать свою поездку
 • 👥 Найти пассажиров для своей машины
 • 💬 Общаться с попутчиками
 • ⭐ Оставлять отзывы и рейтинги
 
-🎯 *Как начать:*
-1. Нажмите кнопку *"Открыть приложение"* ниже
+🎯 Как начать:
+1. Нажмите кнопку "Открыть приложение" ниже
 2. В приложении авторизуйтесь через Telegram
 3. Начните искать поездки или создавайте свои!
 
-📱 *Быстрые команды:*
+📱 Быстрые команды:
 /start - Показать это сообщение
 /help - Получить справку
 /about - О проекте
@@ -119,20 +343,70 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ]]
         
+        # Добавляем кнопку "Помощь" если БД недоступна
+        if not db_available:
+            keyboard.append([
+                InlineKeyboardButton(
+                    "🆘 Помощь (без БД)",
+                    callback_data="help_no_db"
+                )
+            ])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Отправляем БЕЗ parse_mode='Markdown' - используем обычный текст
         await update.message.reply_text(
             welcome_text,
             reply_markup=reply_markup,
-            parse_mode='Markdown',
+            parse_mode=None,  # Отключаем Markdown
             disable_web_page_preview=True
         )
         
     except Exception as e:
-        logger.error(f"Error in start command: {e}")
-        await update.message.reply_text("😕 Произошла ошибка. Попробуйте позже.")
-    finally:
-        db.close()
+        logger.error(f"Критическая ошибка в start command: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        # Упрощенное сообщение на случай критической ошибки
+        try:
+            keyboard = [[
+                InlineKeyboardButton(
+                    "🚗 Открыть Travel Companion",
+                    web_app=WebAppInfo(url=MINI_APP_URL)
+                )
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            simple_text = f"""
+👋 Привет, {user.first_name or 'друг'}!
+
+🚗 Travel Companion — сервис поиска попутчиков для путешествий!
+
+Нажмите кнопку ниже, чтобы открыть приложение и начать пользоваться сервисом!
+
+📱 Основные команды:
+/start - Главное меню
+/help - Помощь
+/about - О проекте
+/app - Открыть приложение
+"""
+            
+            await update.message.reply_text(
+                simple_text,
+                reply_markup=reply_markup,
+                parse_mode=None  # Отключаем Markdown
+            )
+            logger.info(f"Упрощенное сообщение отправлено пользователю {user.id}")
+            
+        except Exception as final_error:
+            logger.critical(f"Даже упрощенное сообщение не отправилось: {final_error}")
+            # Последняя попытка - простой текст без форматирования
+            try:
+                await update.message.reply_text(
+                    f"Привет! Я бот Travel Companion. Используйте /help для помощи."
+                )
+            except:
+                pass
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help"""
@@ -140,21 +414,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Пользователь {user.id} запросил помощь")
     
     help_text = """
-🆘 *Помощь по Travel Companion*
+🆘 Помощь по Travel Companion
 
-*Основные возможности:*
-• *Поиск поездок* — найдите попутчиков по нужному маршруту
-• *Создание поездок* — предложите свою поездку и найдите пассажиров
-• *Бронирование* — забронируйте место в поездке
-• *Рейтинги* — оставляйте отзывы после поездок
+Основные возможности:
+• Поиск поездок — найдите попутчиков по нужному маршруту
+• Создание поездок — предложите свою поездку и найдите пассажиров
+• Бронирование — забронируйте место в поездке
+• Рейтинги — оставляйте отзывы после поездок
 
-*Как использовать:*
-1. Нажмите кнопку *"Открыть Travel Companion"*
+Как использовать:
+1. Нажмите кнопку "Открыть Travel Companion"
 2. Разрешите доступ к вашим данным Telegram
 3. Заполните профиль (особенно если вы водитель)
 4. Начните искать или создавать поездки!
 
-*Команды бота:*
+Команды бота:
 /start - Главное меню
 /help - Эта справка
 /about - О проекте
@@ -164,7 +438,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /my_trips - Мои поездки
 """
     
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode=None)  # Без Markdown
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /about"""
@@ -172,31 +446,31 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Пользователь {user.id} запросил информацию о проекте")
     
     about_text = """
-📱 *Travel Companion*
+📱 Travel Companion
 
-*Версия:* 3.0
-*Разработчик:* Команда Travel Companion
+Версия: 3.0
+Разработчик: Команда Travel Companion
 
-*О проекте:*
+О проекте:
 Travel Companion — это сервис для поиска попутчиков в путешествиях. 
 Мы помогаем людям находить попутчиков для совместных поездок, 
 экономить на путешествиях и находить новых друзей.
 
-*Основные функции:*
+Основные функции:
 • Умный поиск поездок по маршруту и дате
 • Создание собственных поездок
 • Система бронирования и подтверждения
 • Система рейтингов и отзывов
 • Поддержка Telegram Web App
 
-*Технологии:*
+Технологии:
 • Backend: Python, FastAPI, SQLAlchemy
 • Frontend: HTML/CSS/JavaScript, Telegram Web App
 • База данных: PostgreSQL
 • Хостинг: GitHub Pages + Render.com
 """
     
-    await update.message.reply_text(about_text, parse_mode='Markdown')
+    await update.message.reply_text(about_text, parse_mode=None)  # Без Markdown
 
 async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /app - быстрый доступ к приложению"""
@@ -221,6 +495,32 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /stats - статистика"""
     user = update.effective_user
     logger.info(f"Пользователь {user.id} запросил статистику")
+    
+    # Проверяем доступность базы данных
+    db_available = False
+    try:
+        if context.bot_data and 'db_available' in context.bot_data:
+            db_available = context.bot_data['db_available']
+    except:
+        pass
+    
+    if not db_available:
+        keyboard = [[
+            InlineKeyboardButton(
+                "🚗 Открыть Travel Companion",
+                web_app=WebAppInfo(url=MINI_APP_URL)
+            )
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📊 *Статистика недоступна*\n\n"
+            "База данных временно недоступна. Статистика системы не может быть получена.\n\n"
+            "Попробуйте позже или используйте приложение:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
     
     db = get_db_session()
     
@@ -269,7 +569,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {recent_users_text if recent_users_text else "• Нет новых пользователей"}
 
 🕐 *Время сервера:* {datetime.now().strftime('%H:%M %d.%m.%Y')}
-💾 *База данных:* PostgreSQL
+💾 *База данных:* {'PostgreSQL' if DATABASE_URL and 'postgres' in DATABASE_URL else 'SQLite'}
 """
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -278,12 +578,39 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in stats command: {e}")
         await update.message.reply_text("😕 Произошла ошибка при получении статистики.")
     finally:
-        db.close()
+        if db:
+            db.close()
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /profile - профиль пользователя"""
     user = update.effective_user
     logger.info(f"Пользователь {user.id} запросил профиль")
+    
+    # Проверяем доступность базы данных
+    db_available = False
+    try:
+        if context.bot_data and 'db_available' in context.bot_data:
+            db_available = context.bot_data['db_available']
+    except:
+        pass
+    
+    if not db_available:
+        keyboard = [[
+            InlineKeyboardButton(
+                "🚗 Открыть Travel Companion",
+                web_app=WebAppInfo(url=MINI_APP_URL)
+            )
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "👤 *Профиль недоступен*\n\n"
+            "База данных временно недоступна. Ваш профиль не может быть загружен.\n\n"
+            "Попробуйте позже или используйте приложение:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
     
     db = get_db_session()
     
@@ -355,12 +682,39 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in profile command: {e}")
         await update.message.reply_text("😕 Произошла ошибка при получении профиля.")
     finally:
-        db.close()
+        if db:
+            db.close()
 
 async def my_trips_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /my_trips - мои поездки"""
     user = update.effective_user
     logger.info(f"Пользователь {user.id} запросил свои поездки")
+    
+    # Проверяем доступность базы данных
+    db_available = False
+    try:
+        if context.bot_data and 'db_available' in context.bot_data:
+            db_available = context.bot_data['db_available']
+    except:
+        pass
+    
+    if not db_available:
+        keyboard = [[
+            InlineKeyboardButton(
+                "🚗 Открыть Travel Companion",
+                web_app=WebAppInfo(url=MINI_APP_URL)
+            )
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📍 *Мои поездки недоступны*\n\n"
+            "База данных временно недоступна. Ваши поездки не могут быть загружены.\n\n"
+            "Попробуйте позже или используйте приложение:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
     
     db = get_db_session()
     
@@ -450,25 +804,8 @@ async def my_trips_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in my_trips command: {e}")
         await update.message.reply_text("😕 Произошла ошибка при получении поездок.")
     finally:
-        db.close()
-
-async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка данных из Web App"""
-    user = update.effective_user
-    data = update.effective_message.web_app_data.data
-    
-    logger.info(f"Получены данные из Web App от пользователя {user.id}: {data[:50]}...")
-    
-    try:
-        await update.message.reply_text(
-            "✅ Данные из приложения получены. Спасибо за использование Travel Companion!",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обработки данных Web App: {e}")
-        await update.message.reply_text(
-            "⚠️ Произошла ошибка при обработке данных. Попробуйте еще раз."
-        )
+        if db:
+            db.close()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
@@ -538,11 +875,62 @@ def main():
     print("🔧 Конфигурация:")
     print(f"   Бот токен: {'✅ Установлен' if BOT_TOKEN else '❌ Отсутствует'}")
     print(f"   Mini App URL: {MINI_APP_URL}")
-    print(f"   Database URL: {'✅ PostgreSQL' if DATABASE_URL and 'postgres' in DATABASE_URL else '⚠️  SQLite (локально)'}")
+    print(f"   Database URL: {'Установлен' if DATABASE_URL else '❌ Не установлен'}")
+    
+    if DATABASE_URL:
+        if "postgresql" in DATABASE_URL or "postgres://" in DATABASE_URL:
+            print("   Тип БД: PostgreSQL")
+        elif "sqlite" in DATABASE_URL:
+            print("   Тип БД: SQLite")
+        else:
+            print("   Тип БД: Неизвестен")
     
     if not BOT_TOKEN:
         print("❌ ОШИБКА: TELEGRAM_BOT_TOKEN не установлен!")
+        print("   Создайте файл .env и добавьте TELEGRAM_BOT_TOKEN=ваш_токен")
         return
+    
+    # Проверка базы данных
+    print("\n🗄️  Инициализация базы данных...")
+    db_available = True
+    
+    try:
+        # Пытаемся подключиться к базе
+        from sqlalchemy.orm import Session
+        from sqlalchemy import text  # <-- ИМПОРТ ТУТ
+        
+        test_session = Session(database.engine)
+        test_session.execute(text("SELECT 1"))  # <-- ИСПРАВЛЕНИЕ ЗДЕСЬ
+        test_session.close()
+        print("✅ Подключение к базе данных успешно")
+        
+    except Exception as e:
+        print(f"❌ ОШИБКА подключения к базе: {e}")
+        db_available = False
+    
+    if db_available:
+        try:
+            print("📋 Создание таблиц...")
+            database.Base.metadata.create_all(bind=database.engine)
+            print("✅ Таблицы базы данных созданы/проверены")
+            
+        except Exception as e:
+            print(f"❌ ОШИБКА создания таблиц: {e}")
+            db_available = False
+    
+    if not db_available:
+        print("\n⚠️  Бот запускается без базы данных!")
+        print("   Функционал будет ограничен:")
+        print("   - Регистрация пользователей не будет сохраняться")
+        print("   - Статистика недоступна")
+        print("   - Поездки не будут сохраняться")
+        print("   - Профили будут временными")
+        
+        continue_choice = input("\n   Продолжить? (y/n): ").lower()
+        if continue_choice != 'y':
+            print("❌ Завершение работы...")
+            return
+        print("🔄 Продолжаем в режиме без базы данных...")
     
     print("\n📱 Функционал бота:")
     print("   • /start - Главное меню с регистрацией")
@@ -556,9 +944,14 @@ def main():
     
     try:
         # Создаем приложение
+        print("🚀 Создание приложения Telegram...")
         application = Application.builder().token(BOT_TOKEN).build()
         
+        # Сохраняем флаг доступности базы в контекст бота
+        application.bot_data['db_available'] = db_available
+        
         # Регистрируем обработчики
+        print("🔗 Регистрация обработчиков команд...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("about", about_command))
@@ -567,6 +960,7 @@ def main():
         application.add_handler(CommandHandler("profile", profile_command))
         application.add_handler(CommandHandler("my_trips", my_trips_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(CallbackQueryHandler(help_no_db_callback, pattern="^help_no_db$"))
         
         # Обработчик ошибок
         application.add_error_handler(error_handler)
@@ -579,8 +973,14 @@ def main():
         # Запускаем бота
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            poll_interval=0.5,
+            timeout=30
         )
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Бот остановлен пользователем")
+        print("👋 До свидания!")
         
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске бота: {e}")
