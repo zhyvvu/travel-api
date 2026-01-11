@@ -899,7 +899,7 @@ def get_full_user_profile(
             "date": trip.departure_date.strftime("%d.%m.%Y %H:%M"),
             "seats": trip.available_seats,
             "price": trip.price_per_seat,
-            "status": trip.status.value if trip.status else "active"
+            "status": trip.status.value if trip.status else "active",
             "passengers_count": len(trip.bookings)
         })
     
