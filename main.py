@@ -105,14 +105,6 @@ class DriverTripUpdate(BaseModel):
     finish_address: Optional[str] = None
 
 
-def main():
-    # Создаем таблицы если их нет
-    try:
-        database.Base.metadata.create_all(bind=database.engine)
-        logger.info("✅ Таблицы базы данных созданы/проверены")
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания таблиц: {e}")
-
 # Функция для проверки Telegram Web App данных (опционально)
 def verify_telegram_data(init_data: str, bot_token: str) -> bool:
     """Проверка подписи данных от Telegram"""
@@ -146,11 +138,32 @@ def verify_telegram_data(init_data: str, bot_token: str) -> bool:
         return False
 
 @asynccontextmanager
+@asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Таблицы создаются через миграции Alembic
-    # (выполняется в render.yaml на этапе сборки)
-    print("✅ Сервер запущен с миграциями Alembic")
+    """Запускается при старте сервера"""
+    print("=" * 60)
+    print("🚀 ЗАПУСК TRAVEL COMPANION API")
+    print("=" * 60)
+    
+    # Создаем таблицы если их нет
+    try:
+        database.Base.metadata.create_all(bind=database.engine)
+        print("✅ Таблицы базы данных созданы/проверены")
+        
+        # Проверяем подключение
+        from sqlalchemy import text
+        with database.SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+        print("✅ Подключение к базе данных успешно")
+        
+    except Exception as e:
+        print(f"❌ Ошибка инициализации базы данных: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print("=" * 60)
     yield
+    
     # При остановке
     print("👋 Сервер останавливается")
 
