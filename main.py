@@ -677,19 +677,20 @@ def create_booking(
         "booking_id": booking.id
     }
 
-@app.post("/api/bookings/{booking_id}/cancel")
-def cancel_booking(
-    booking_id: int,
+# =============== ОТМЕНА ПОЕЗДКИ ВОДИТЕЛЯ ===============
+@app.post("/api/trips/{trip_id}/cancel")
+def cancel_driver_trip(
+    trip_id: int,
     telegram_id: int = Query(..., description="Telegram ID пользователя"),
     db: Session = Depends(database.get_db)
 ):
-    """Отменить бронирование"""
-    booking = db.query(database.Booking).filter(
-        database.Booking.id == booking_id
+    """Отменить поездку водителя"""
+    trip = db.query(database.DriverTrip).filter(
+        database.DriverTrip.id == trip_id
     ).first()
     
-    if not booking:
-        raise HTTPException(status_code=404, detail="Бронирование не найдено")
+    if not trip:
+        raise HTTPException(status_code=404, detail="Поездка не найдена")
     
     user = db.query(database.User).filter(
         database.User.telegram_id == telegram_id
@@ -698,26 +699,28 @@ def cancel_booking(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    is_passenger = booking.passenger_id == user.id
-    is_driver = booking.driver_trip.driver_id == user.id
+    if trip.driver_id != user.id:
+        raise HTTPException(status_code=403, detail="Вы не можете отменить чужую поездку")
     
-    if not (is_passenger or is_driver):
-        raise HTTPException(status_code=403, detail="Нет прав для отмены этого бронирования")
+    if trip.status != database.TripStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Поездка уже не активна")
     
-    booking.status = database.TripStatus.CANCELLED
-    booking.cancelled_at = datetime.utcnow()
+    # Отменяем все бронирования этой поездки
+    cancelled_bookings = 0
+    for booking in trip.bookings:
+        if booking.status == database.TripStatus.ACTIVE:
+            booking.status = database.TripStatus.CANCELLED
+            booking.cancelled_at = datetime.utcnow()
+            cancelled_bookings += 1
     
-    if is_passenger:
-        trip = booking.driver_trip
-        if trip.status == database.TripStatus.COMPLETED:
-            trip.status = database.TripStatus.ACTIVE
-        trip.available_seats += booking.booked_seats
-    
+    # Меняем статус поездки
+    trip.status = database.TripStatus.CANCELLED
     db.commit()
     
     return {
         "success": True,
-        "message": "Бронирование отменено"
+        "message": "Поездка отменена",
+        "cancelled_bookings": cancelled_bookings
     }
 
 # =============== СТАТИСТИКА ===============
