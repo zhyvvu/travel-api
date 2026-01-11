@@ -56,14 +56,6 @@ class DriverTripCreate(BaseModel):
     price_per_seat: float = Field(..., gt=0)
     comment: Optional[str] = None
 
-    # Добавить валидацию
-    @validator('departure_date')
-    def validate_departure_date(cls, v):
-        # Убедиться, что дата корректна
-        if v < datetime.now():
-            raise ValueError('Дата должна быть в будущем')
-        return v
-
 class BookingCreate(BaseModel):
     driver_trip_id: int
     booked_seats: int = Field(1, ge=1, le=10)
