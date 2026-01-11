@@ -56,6 +56,14 @@ class DriverTripCreate(BaseModel):
     price_per_seat: float = Field(..., gt=0)
     comment: Optional[str] = None
 
+    # Добавить валидацию
+    @validator('departure_date')
+    def validate_departure_date(cls, v):
+        # Убедиться, что дата корректна
+        if v < datetime.now():
+            raise ValueError('Дата должна быть в будущем')
+        return v
+
 class BookingCreate(BaseModel):
     driver_trip_id: int
     booked_seats: int = Field(1, ge=1, le=10)
@@ -892,6 +900,7 @@ def get_full_user_profile(
             "seats": trip.available_seats,
             "price": trip.price_per_seat,
             "status": trip.status.value if trip.status else "active"
+            "passengers_count": len(trip.bookings)
         })
     
     passenger_trips_result = []
