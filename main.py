@@ -68,6 +68,21 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 
 # =============== PYDANTIC МОДЕЛИ ===============
+
+# 1. СНАЧАЛА базовые модели для карт
+class MapPoint(BaseModel):
+    lat: float
+    lng: float
+    address: Optional[str] = None
+
+class RouteData(BaseModel):
+    start_point: MapPoint
+    finish_point: MapPoint
+    distance: Optional[float] = None  # километры
+    duration: Optional[int] = None    # минуты
+    polyline: Optional[str] = None    # геометрия маршрута
+
+# 2. Telegram модели
 class TelegramUser(BaseModel):
     id: int
     first_name: str
@@ -81,6 +96,7 @@ class LoginRequest(BaseModel):
     initData: Optional[str] = None
     user: Optional[TelegramUser] = None
 
+# 3. Поездки
 class DriverTripCreate(BaseModel):
     # Основные поля
     departure_date: datetime
@@ -97,6 +113,7 @@ class BookingCreate(BaseModel):
     booked_seats: int = Field(1, ge=1, le=10)
     notes: Optional[str] = None
 
+# 4. Пользователи
 class UserUpdate(BaseModel):
     phone: Optional[str] = None
     has_car: Optional[bool] = None
@@ -106,6 +123,7 @@ class UserUpdate(BaseModel):
     car_type: Optional[str] = None
     car_seats: Optional[int] = None
 
+# 5. Поиск
 class SearchQuery(BaseModel):
     from_city: str
     to_city: str
@@ -113,6 +131,7 @@ class SearchQuery(BaseModel):
     passengers: int = 1
     max_price: Optional[float] = None
 
+# 6. Автомобили
 class CarCreate(BaseModel):
     model: str
     color: Optional[str] = None
@@ -132,6 +151,7 @@ class CarUpdate(BaseModel):
     is_default: Optional[bool] = None
     is_active: Optional[bool] = None
 
+# 7. Обновления
 class BookingUpdate(BaseModel):
     booked_seats: Optional[int] = Field(None, ge=1, le=10)
     notes: Optional[str] = None
@@ -144,19 +164,6 @@ class DriverTripUpdate(BaseModel):
     comment: Optional[str] = None
     start_address: Optional[str] = None
     finish_address: Optional[str] = None
-
-# =============== МОДЕЛИ ДЛЯ КАРТ И МАРШРУТОВ ===============
-class MapPoint(BaseModel):
-    lat: float
-    lng: float
-    address: Optional[str] = None
-
-class RouteData(BaseModel):
-    start_point: MapPoint
-    finish_point: MapPoint
-    distance: Optional[float] = None  # километры
-    duration: Optional[int] = None    # минуты
-    polyline: Optional[str] = None    # геометрия маршрута
 
 # =============== FASTAPI APP ===============
 app = FastAPI(
