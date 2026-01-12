@@ -1255,6 +1255,15 @@ def debug_users(db: Session = Depends(database.get_db)):
         "users": result
     }
 
+@app.post("/api/trips/update-statuses")
+def manual_update_statuses(db: Session = Depends(database.get_db)):
+    """Ручное обновление статусов поездок (для отладки)"""
+    try:
+        update_trip_statuses(db)
+        return {"success": True, "message": "Статусы обновлены"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # =============== ЗАПУСК СЕРВЕРА ===============
 if __name__ == "__main__":
     import uvicorn
