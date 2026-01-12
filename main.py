@@ -200,8 +200,10 @@ async def add_telegram_user(request: Request, call_next):
 # =============== STARTUP EVENT ===============
 # =============== STARTUP EVENT ===============
 @app.on_event("startup")
+# =============== STARTUP EVENT ===============
+@app.on_event("startup")
 async def startup_event():
-    """Создание таблиц и запуск фоновых задач при запуске приложения"""
+    """Создание таблиц, проверка структуры БД и запуск фоновых задач"""
     print("=" * 60)
     print("🚀 ЗАПУСК TRAVEL COMPANION API (Версия с картами)")
     print("=" * 60)
@@ -218,7 +220,6 @@ async def startup_event():
         
         session = database.SessionLocal()
         try:
-            # Выполняем простой запрос для проверки подключения
             result = session.execute(text("SELECT 1"))
             session.commit()
             
@@ -235,162 +236,220 @@ async def startup_event():
         finally:
             session.close()
         
-        # 3. Проверяем наличие необходимых таблиц и их структуры
-        print("📊 Проверка структуры базы данных...")
+        # 3. ПРОВЕРЯЕМ И ДОБАВЛЯЕМ ОТСУТСТВУЮЩИЕ ПОЛЯ ДЛЯ КАРТ
+        print("🔄 Проверяем и добавляем поля для карт...")
+        session = database.SessionLocal()
         try:
-            session = database.SessionLocal()
+            # Список полей для проверки/добавления
+            fields_to_add = [
+                {
+                    'name': 'estimated_arrival',
+                    'type': 'TIMESTAMP',
+                    'description': 'Предполагаемое время прибытия'
+                },
+                {
+                    'name': 'start_coordinates',
+                    'type': 'JSONB' if 'postgresql' in os.getenv('DATABASE_URL', '') else 'JSON',
+                    'description': 'Координаты начала маршрута'
+                },
+                {
+                    'name': 'finish_coordinates',
+                    'type': 'JSONB' if 'postgresql' in os.getenv('DATABASE_URL', '') else 'JSON',
+                    'description': 'Координаты конца маршрута'
+                },
+                {
+                    'name': 'route_polyline',
+                    'type': 'TEXT',
+                    'description': 'Закодированная геометрия маршрута'
+                }
+            ]
             
-            # Проверяем наличие таблицы пользователей
-            users_count = session.query(database.User).count()
-            print(f"   👥 Пользователей в базе: {users_count}")
+            added_fields = []
             
-            # Проверяем наличие таблицы поездок
-            trips_count = session.query(database.DriverTrip).count()
-            print(f"   🚗 Поездок в базе: {trips_count}")
+            for field in fields_to_add:
+                try:
+                    # Проверяем существует ли поле в таблице driver_trips
+                    result = session.execute(text(f"""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'driver_trips' 
+                        AND column_name = '{field['name']}'
+                    """))
+                    
+                    if not result.fetchone():
+                        print(f"   ➕ Добавляем поле: {field['name']} ({field['description']})")
+                        
+                        # Добавляем поле в таблицу
+                        if 'postgresql' in os.getenv('DATABASE_URL', ''):
+                            # Для PostgreSQL
+                            session.execute(text(f"""
+                                ALTER TABLE driver_trips 
+                                ADD COLUMN {field['name']} {field['type']}
+                            """))
+                        else:
+                            # Для SQLite
+                            session.execute(text(f"""
+                                ALTER TABLE driver_trips 
+                                ADD COLUMN {field['name']} {field['type']}
+                            """))
+                        
+                        session.commit()
+                        added_fields.append(field['name'])
+                        print(f"   ✅ Поле {field['name']} успешно добавлено")
+                    else:
+                        print(f"   ✓ Поле {field['name']} уже существует")
+                        
+                except Exception as field_error:
+                    print(f"   ⚠️  Ошибка при работе с полем {field['name']}: {str(field_error)[:100]}")
+                    session.rollback()
             
-            # Проверяем новые поля для карт
-            import inspect
-            trip_columns = [column.name for column in inspect(database.DriverTrip).c]
-            
-            required_fields = ['start_coordinates', 'finish_coordinates', 'route_polyline', 'estimated_arrival']
-            missing_fields = []
-            
-            for field in required_fields:
-                if field not in trip_columns:
-                    missing_fields.append(field)
-            
-            if missing_fields:
-                print(f"⚠️  Отсутствуют поля для карт: {', '.join(missing_fields)}")
-                print("   Выполните миграцию базы данных: alembic upgrade head")
+            if added_fields:
+                print(f"✅ Добавлены новые поля: {', '.join(added_fields)}")
             else:
-                print("✅ Все поля для карт присутствуют")
+                print("✅ Все необходимые поля уже существуют")
             
-            session.close()
+            # Проверяем общую структуру таблицы driver_trips
+            print("\n📊 Структура таблицы driver_trips:")
+            result = session.execute(text("""
+                SELECT column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_name = 'driver_trips'
+                ORDER BY column_name
+            """))
+            
+            columns = result.fetchall()
+            print(f"   Всего столбцов: {len(columns)}")
+            
+            # Отображаем только поля связанные с картами
+            map_columns = [col for col in columns if any(field in col[0] for field in 
+                          ['coordinates', 'polyline', 'estimated', 'route_'])]
+            
+            for col in map_columns:
+                print(f"   • {col[0]}: {col[1]}")
             
         except Exception as e:
             print(f"⚠️  Ошибка проверки структуры БД: {e}")
-            # Не прерываем запуск, если проверка не удалась
+        finally:
+            session.close()
         
-        # 4. Запускаем фоновую задачу для обновления статусов поездок
-        print("🔄 Запуск фоновой задачи для обновления статусов...")
+        # 4. ЗАПУСКАЕМ ФОНОВУЮ ЗАДАЧУ ДЛЯ ОБНОВЛЕНИЯ СТАТУСОВ
+        print("\n🔄 Запуск фоновой задачи для обновления статусов...")
         try:
             # Функция для фоновой задачи
             def update_trip_statuses_task():
                 """Фоновая задача для автоматического обновления статусов поездок"""
                 import time
-                from datetime import datetime
+                from datetime import datetime, timedelta
                 
                 print("   📡 Фоновая задача запущена")
                 
-                # СОЗДАЕМ сессию внутри функции
-                try:
-                    bg_db = database.SessionLocal()
-                except Exception as db_error:
-                    print(f"   ❌ Не удалось создать сессию БД: {db_error}")
-                    return  # Завершаем задачу если не можем подключиться к БД
+                # Счетчик циклов для логирования
+                cycle_count = 0
                 
                 while True:
+                    cycle_count += 1
+                    current_time = datetime.utcnow()
+                    
+                    # Создаем новую сессию для каждого цикла
+                    db_session = None
                     try:
-                        current_time = datetime.utcnow()
+                        db_session = database.SessionLocal()
                         
                         # 4.1. Обновляем поездки, которые должны начаться (ACTIVE → IN_PROGRESS)
-                        active_trips = bg_db.query(database.DriverTrip).filter(
+                        active_trips = db_session.query(database.DriverTrip).filter(
                             database.DriverTrip.status == database.TripStatus.ACTIVE,
                             database.DriverTrip.departure_date <= current_time
                         ).all()
                         
                         if active_trips:
-                            print(f"   🚗 Обновление {len(active_trips)} активных поездок...")
+                            print(f"   🚗 {len(active_trips)} поездок начинаются...")
                             for trip in active_trips:
                                 trip.status = database.TripStatus.IN_PROGRESS
                                 trip.updated_at = current_time
-                                print(f"     → Поездка #{trip.id} началась (IN_PROGRESS)")
                         
                         # 4.2. Обновляем поездки, которые должны завершиться (IN_PROGRESS → COMPLETED)
-                        # Используем estimated_arrival если есть, иначе добавляем 3 часа к departure_date
-                        in_progress_trips = bg_db.query(database.DriverTrip).filter(
+                        in_progress_trips = db_session.query(database.DriverTrip).filter(
                             database.DriverTrip.status == database.TripStatus.IN_PROGRESS
                         ).all()
                         
                         completed_count = 0
                         for trip in in_progress_trips:
                             # Определяем время завершения поездки
-                            if hasattr(trip, 'estimated_arrival') and trip.estimated_arrival:
-                                arrival_time = trip.estimated_arrival
-                            elif hasattr(trip, 'route_duration') and trip.route_duration:
-                                # Если есть длительность маршрута, добавляем ее к времени отправления
-                                from datetime import timedelta
-                                arrival_time = trip.departure_date + timedelta(minutes=trip.route_duration)
-                            else:
-                                # По умолчанию: поездка длится 3 часа
-                                arrival_time = trip.departure_date + timedelta(hours=3)
+                            arrival_time = None
+                            
+                            # Пытаемся использовать estimated_arrival если поле существует
+                            try:
+                                if hasattr(trip, 'estimated_arrival') and trip.estimated_arrival:
+                                    arrival_time = trip.estimated_arrival
+                            except:
+                                pass
+                            
+                            # Если estimated_arrival не доступен, используем расчетное время
+                            if not arrival_time:
+                                if hasattr(trip, 'route_duration') and trip.route_duration:
+                                    # Используем длительность маршрута
+                                    arrival_time = trip.departure_date + timedelta(minutes=trip.route_duration)
+                                else:
+                                    # По умолчанию: 3 часа
+                                    arrival_time = trip.departure_date + timedelta(hours=3)
                             
                             # Если время прибытия прошло, завершаем поездку
                             if arrival_time <= current_time:
                                 trip.status = database.TripStatus.COMPLETED
                                 trip.updated_at = current_time
                                 completed_count += 1
-                                print(f"     → Поездка #{trip.id} завершена (COMPLETED)")
                         
                         if completed_count > 0:
-                            print(f"   ✅ Завершено {completed_count} поездок")
+                            print(f"   ✅ {completed_count} поездок завершены")
                         
-                        # 4.3. Коммитим изменения
-                        bg_db.commit()
+                        # Коммитим изменения
+                        db_session.commit()
                         
-                        # 4.4. Логируем статистику (раз в 10 циклов)
-                        if hasattr(update_trip_statuses_task, 'cycle_count'):
-                            update_trip_statuses_task.cycle_count += 1
-                        else:
-                            update_trip_statuses_task.cycle_count = 1
-                        
-                        if update_trip_statuses_task.cycle_count % 10 == 0:
+                        # 4.3. Логируем статистику каждые 10 циклов (≈10 минут)
+                        if cycle_count % 10 == 0:
                             try:
                                 stats = {
-                                    "active": bg_db.query(database.DriverTrip).filter(
+                                    "active": db_session.query(database.DriverTrip).filter(
                                         database.DriverTrip.status == database.TripStatus.ACTIVE
                                     ).count(),
-                                    "in_progress": bg_db.query(database.DriverTrip).filter(
+                                    "in_progress": db_session.query(database.DriverTrip).filter(
                                         database.DriverTrip.status == database.TripStatus.IN_PROGRESS
                                     ).count(),
-                                    "completed": bg_db.query(database.DriverTrip).filter(
+                                    "completed": db_session.query(database.DriverTrip).filter(
                                         database.DriverTrip.status == database.TripStatus.COMPLETED
                                     ).count(),
-                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    "cancelled": db_session.query(database.DriverTrip).filter(
+                                        database.DriverTrip.status == database.TripStatus.CANCELLED
+                                    ).count(),
                                 }
-                                print(f"   📊 Статистика: ACTIVE={stats['active']}, "
-                                    f"IN_PROGRESS={stats['in_progress']}, "
-                                    f"COMPLETED={stats['completed']} ({stats['timestamp']})")
+                                
+                                print(f"   📊 Статистика: "
+                                      f"ACTIVE={stats['active']}, "
+                                      f"IN_PROGRESS={stats['in_progress']}, "
+                                      f"COMPLETED={stats['completed']}, "
+                                      f"CANCELLED={stats['cancelled']} "
+                                      f"({datetime.now().strftime('%H:%M:%S')})")
                             except Exception as stats_error:
-                                print(f"   ⚠️  Ошибка получения статистики: {stats_error}")
+                                print(f"   ⚠️  Ошибка статистики: {stats_error}")
+                        
+                        # 4.4. Закрываем сессию
+                        db_session.close()
                         
                         # 4.5. Ждем 60 секунд перед следующей проверкой
                         time.sleep(60)
                         
                     except Exception as task_error:
-                        print(f"   ❌ Ошибка в фоновой задаче: {task_error}")
-                        import traceback
-                        traceback.print_exc()
+                        print(f"   ❌ Ошибка в фоновой задаче (цикл {cycle_count}): {task_error}")
                         
-                        # Пытаемся восстановить соединение с БД
-                        try:
-                            bg_db.rollback()
-                            # Проверяем соединение
-                            from sqlalchemy import text
-                            bg_db.execute(text("SELECT 1"))
-                            print("   🔄 Соединение с БД восстановлено")
-                        except:
+                        # Закрываем сессию если она открыта
+                        if db_session:
                             try:
-                                bg_db.close()
-                                bg_db = database.SessionLocal()
-                                print("   🔄 Переподключение к базе данных...")
+                                db_session.rollback()
+                                db_session.close()
                             except:
-                                print("   ⚠️  Не удалось восстановить соединение с БД")
-                                # Ждем дольше перед повторной попыткой
-                                time.sleep(120)
-                                continue
+                                pass
                         
-                        # Ждем перед повторной попыткой
+                        # Ждем дольше при ошибке
                         time.sleep(30)
             
             # Запускаем фоновую задачу в отдельном потоке
@@ -403,27 +462,45 @@ async def startup_event():
             background_thread.start()
             
             print("✅ Фоновая задача для обновления статусов запущена")
-            print(f"   ID потока: {background_thread.ident}")
-            print(f"   Имя потока: {background_thread.name}")
+            print(f"   Поток: {background_thread.name} (ID: {background_thread.ident})")
+            print(f"   Интервал проверки: 60 секунд")
             
         except Exception as e:
             print(f"❌ Ошибка запуска фоновой задачи: {e}")
             import traceback
             traceback.print_exc()
         
-        # 5. Выводим информацию о конфигурации
-        print("⚙️  Конфигурация системы:")
-        print(f"   Database URL: {'PostgreSQL' if 'postgresql' in os.getenv('DATABASE_URL', '') else 'SQLite'}")
-        print(f"   API Host: 0.0.0.0")
-        print(f"   API Port: {os.getenv('PORT', 8000)}")
-        print(f"   Telegram Bot Token: {'✅ Установлен' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌ Отсутствует'}")
+        # 5. ВЫВОДИМ ИНФОРМАЦИЮ О КОНФИГУРАЦИИ
+        print("\n⚙️  Конфигурация системы:")
         
-        # Проверяем наличие API-ключа Яндекс.Карт (опционально)
+        # Информация о БД
+        db_url = os.getenv("DATABASE_URL", "")
+        if "postgresql" in db_url:
+            print(f"   База данных: PostgreSQL")
+            # Маскируем пароль в URL для безопасности
+            if "@" in db_url:
+                parts = db_url.split("@")
+                if ":" in parts[0]:
+                    user_part = parts[0].split(":")[0]
+                    masked_url = f"{user_part}:****@{parts[1]}"
+                    print(f"   URL: {masked_url}")
+        else:
+            print(f"   База данных: SQLite")
+        
+        # Другие настройки
+        print(f"   Хост: 0.0.0.0")
+        print(f"   Порт: {os.getenv('PORT', 8000)}")
+        print(f"   Токен Telegram бота: {'✅ Установлен' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌ Отсутствует'}")
+        
+        # Проверяем ключ Яндекс.Карт
         yandex_key = os.getenv("YANDEX_MAPS_API_KEY")
         if yandex_key:
-            print(f"   Яндекс.Карты API: ✅ (ключ: {yandex_key[:10]}...)")
+            # Показываем только часть ключа для безопасности
+            key_preview = yandex_key[:8] + "..." + yandex_key[-4:] if len(yandex_key) > 12 else yandex_key
+            print(f"   Ключ Яндекс.Карт: ✅ ({key_preview})")
         else:
-            print(f"   Яндекс.Карты API: ⚠️  Ключ не установлен в переменных окружения")
+            print(f"   Ключ Яндекс.Карт: ⚠️  Не установлен")
+            print(f"      Установите переменную окружения YANDEX_MAPS_API_KEY")
         
         print("=" * 60)
         print("✅ Сервер успешно запущен и готов к работе!")
