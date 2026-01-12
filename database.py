@@ -102,6 +102,7 @@ class DriverTrip(Base):
     # Дата и время
     departure_date = Column(DateTime, nullable=False)
     departure_time = Column(String(10))  # "HH:MM"
+    estimated_arrival = Column(DateTime) 
     
     # Локации
     start_address = Column(String(500), nullable=False)
@@ -119,6 +120,10 @@ class DriverTrip(Base):
     route_distance = Column(Float)  # км
     route_duration = Column(Integer)  # минуты
     polyline = Column(Text)
+    # ↓ НОВЫЕ ПОЛЯ ДЛЯ КАРТ ↓
+    start_coordinates = Column(JSON)  # {"lat": 55.75, "lng": 37.62}
+    finish_coordinates = Column(JSON) # {"lat": 59.93, "lng": 30.31}
+    route_polyline = Column(Text)     # Закодированная геометрия маршрута для карты
     
     # Детали поездки
     available_seats = Column(Integer, nullable=False, default=3)

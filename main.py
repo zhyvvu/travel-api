@@ -1,4 +1,8 @@
 # main.py - ОПТИМИЗИРОВАННЫЙ API ДЛЯ TELEGRAM WEB APP
+import threading
+import time
+from sqlalchemy import text
+from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, and_
@@ -13,6 +17,39 @@ import hashlib
 import hmac
 import os
 import sys
+
+def update_trip_statuses(db: Session):
+    """Фоновая задача для обновления статусов поездок"""
+    while True:
+        try:
+            now = datetime.utcnow()
+            
+            # Обновляем поездки в пути
+            active_trips = db.query(database.DriverTrip).filter(
+                database.DriverTrip.status == database.TripStatus.ACTIVE,
+                database.DriverTrip.departure_date <= now
+            ).all()
+            
+            for trip in active_trips:
+                trip.status = database.TripStatus.IN_PROGRESS
+            
+            # Обновляем завершенные поездки
+            in_progress_trips = db.query(database.DriverTrip).filter(
+                database.DriverTrip.status == database.TripStatus.IN_PROGRESS,
+                database.DriverTrip.estimated_arrival <= now
+            ).all()
+            
+            for trip in in_progress_trips:
+                trip.status = database.TripStatus.COMPLETED
+            
+            db.commit()
+            
+        except Exception as e:
+            print(f"Ошибка в фоновой задаче: {e}")
+            db.rollback()
+        
+        # Ждем 5 минут перед следующей проверкой
+        time.sleep(300)
 
 # Добавляем текущую директорию в путь для импорта
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -29,6 +66,7 @@ UserCar = database.UserCar
 # Telegram Bot Token для верификации данных (если нужно)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+
 # =============== PYDANTIC МОДЕЛИ ===============
 class TelegramUser(BaseModel):
     id: int
@@ -44,17 +82,15 @@ class LoginRequest(BaseModel):
     user: Optional[TelegramUser] = None
 
 class DriverTripCreate(BaseModel):
+    # Основные поля
     departure_date: datetime
     departure_time: str = Field(..., pattern=r'^([0-1][0-9]|2[0-3]):[0-5][0-9]$')
-    start_address: str
-    start_lat: Optional[float] = None
-    start_lng: Optional[float] = None
-    finish_address: str
-    finish_lat: Optional[float] = None
-    finish_lng: Optional[float] = None
     available_seats: int = Field(..., ge=1, le=10)
     price_per_seat: float = Field(..., gt=0)
     comment: Optional[str] = None
+    
+    # Данные маршрута (вместо простых адресов)
+    route_data: RouteData
 
 class BookingCreate(BaseModel):
     driver_trip_id: int
@@ -109,6 +145,19 @@ class DriverTripUpdate(BaseModel):
     start_address: Optional[str] = None
     finish_address: Optional[str] = None
 
+# =============== МОДЕЛИ ДЛЯ КАРТ И МАРШРУТОВ ===============
+class MapPoint(BaseModel):
+    lat: float
+    lng: float
+    address: Optional[str] = None
+
+class RouteData(BaseModel):
+    start_point: MapPoint
+    finish_point: MapPoint
+    distance: Optional[float] = None  # километры
+    duration: Optional[int] = None    # минуты
+    polyline: Optional[str] = None    # геометрия маршрута
+
 # =============== FASTAPI APP ===============
 app = FastAPI(
     title="Travel Companion API",
@@ -142,42 +191,253 @@ async def add_telegram_user(request: Request, call_next):
     return response
 
 # =============== STARTUP EVENT ===============
+# =============== STARTUP EVENT ===============
 @app.on_event("startup")
 async def startup_event():
-    """Создание таблиц при запуске"""
+    """Создание таблиц и запуск фоновых задач при запуске приложения"""
     print("=" * 60)
-    print("🚀 ЗАПУСК TRAVEL COMPANION API")
+    print("🚀 ЗАПУСК TRAVEL COMPANION API (Версия с картами)")
     print("=" * 60)
     
     try:
-        # Создаем таблицы
+        # 1. Создаем таблицы в базе данных
+        print("🗄️  Создание/проверка таблиц базы данных...")
         database.Base.metadata.create_all(bind=database.engine)
         print("✅ Таблицы базы данных созданы/проверены")
         
-        # Проверяем подключение
+        # 2. Проверяем подключение к базе данных
+        print("🔌 Проверка подключения к базе данных...")
         from sqlalchemy import text
+        
         session = database.SessionLocal()
         try:
-            session.execute(text("SELECT 1"))
+            # Выполняем простой запрос для проверки подключения
+            result = session.execute(text("SELECT 1"))
             session.commit()
-            print("✅ Подключение к базе данных успешно")
+            
+            if result.scalar() == 1:
+                print("✅ Подключение к базе данных успешно")
+            else:
+                print("⚠️  Неожиданный результат проверки БД")
+                
         except Exception as e:
             print(f"❌ Ошибка подключения к базе: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         finally:
             session.close()
+        
+        # 3. Проверяем наличие необходимых таблиц и их структуры
+        print("📊 Проверка структуры базы данных...")
+        try:
+            session = database.SessionLocal()
             
+            # Проверяем наличие таблицы пользователей
+            users_count = session.query(database.User).count()
+            print(f"   👥 Пользователей в базе: {users_count}")
+            
+            # Проверяем наличие таблицы поездок
+            trips_count = session.query(database.DriverTrip).count()
+            print(f"   🚗 Поездок в базе: {trips_count}")
+            
+            # Проверяем новые поля для карт
+            import inspect
+            trip_columns = [column.name for column in inspect(database.DriverTrip).c]
+            
+            required_fields = ['start_coordinates', 'finish_coordinates', 'route_polyline', 'estimated_arrival']
+            missing_fields = []
+            
+            for field in required_fields:
+                if field not in trip_columns:
+                    missing_fields.append(field)
+            
+            if missing_fields:
+                print(f"⚠️  Отсутствуют поля для карт: {', '.join(missing_fields)}")
+                print("   Выполните миграцию базы данных: alembic upgrade head")
+            else:
+                print("✅ Все поля для карт присутствуют")
+            
+            session.close()
+            
+        except Exception as e:
+            print(f"⚠️  Ошибка проверки структуры БД: {e}")
+            # Не прерываем запуск, если проверка не удалась
+        
+        # 4. Запускаем фоновую задачу для обновления статусов поездок
+        print("🔄 Запуск фоновой задачи для обновления статусов...")
+        try:
+            # Создаем новую сессию для фоновой задачи
+            bg_db = database.SessionLocal()
+            
+            # Функция для фоновой задачи
+            def update_trip_statuses_task():
+                """Фоновая задача для автоматического обновления статусов поездок"""
+                import time
+                from datetime import datetime
+                
+                print("   📡 Фоновая задача запущена")
+                
+                while True:
+                    try:
+                        current_time = datetime.utcnow()
+                        
+                        # 4.1. Обновляем поездки, которые должны начаться (ACTIVE → IN_PROGRESS)
+                        active_trips = bg_db.query(database.DriverTrip).filter(
+                            database.DriverTrip.status == database.TripStatus.ACTIVE,
+                            database.DriverTrip.departure_date <= current_time
+                        ).all()
+                        
+                        if active_trips:
+                            print(f"   🚗 Обновление {len(active_trips)} активных поездок...")
+                            for trip in active_trips:
+                                trip.status = database.TripStatus.IN_PROGRESS
+                                trip.updated_at = current_time
+                                print(f"     → Поездка #{trip.id} началась (IN_PROGRESS)")
+                        
+                        # 4.2. Обновляем поездки, которые должны завершиться (IN_PROGRESS → COMPLETED)
+                        # Используем estimated_arrival если есть, иначе добавляем 3 часа к departure_date
+                        in_progress_trips = bg_db.query(database.DriverTrip).filter(
+                            database.DriverTrip.status == database.TripStatus.IN_PROGRESS
+                        ).all()
+                        
+                        completed_count = 0
+                        for trip in in_progress_trips:
+                            # Определяем время завершения поездки
+                            if trip.estimated_arrival:
+                                arrival_time = trip.estimated_arrival
+                            elif trip.route_duration:
+                                # Если есть длительность маршрута, добавляем ее к времени отправления
+                                from datetime import timedelta
+                                arrival_time = trip.departure_date + timedelta(minutes=trip.route_duration)
+                            else:
+                                # По умолчанию: поездка длится 3 часа
+                                arrival_time = trip.departure_date + timedelta(hours=3)
+                            
+                            # Если время прибытия прошло, завершаем поездку
+                            if arrival_time <= current_time:
+                                trip.status = database.TripStatus.COMPLETED
+                                trip.updated_at = current_time
+                                completed_count += 1
+                                print(f"     → Поездка #{trip.id} завершена (COMPLETED)")
+                        
+                        if completed_count > 0:
+                            print(f"   ✅ Завершено {completed_count} поездок")
+                        
+                        # 4.3. Коммитим изменения
+                        bg_db.commit()
+                        
+                        # 4.4. Логируем статистику (раз в 10 циклов)
+                        if hasattr(update_trip_statuses_task, 'cycle_count'):
+                            update_trip_statuses_task.cycle_count += 1
+                        else:
+                            update_trip_statuses_task.cycle_count = 1
+                        
+                        if update_trip_statuses_task.cycle_count % 10 == 0:
+                            stats = {
+                                "active": bg_db.query(database.DriverTrip).filter(
+                                    database.DriverTrip.status == database.TripStatus.ACTIVE
+                                ).count(),
+                                "in_progress": bg_db.query(database.DriverTrip).filter(
+                                    database.DriverTrip.status == database.TripStatus.IN_PROGRESS
+                                ).count(),
+                                "completed": bg_db.query(database.DriverTrip).filter(
+                                    database.DriverTrip.status == database.TripStatus.COMPLETED
+                                ).count(),
+                                "timestamp": datetime.now().strftime("%H:%M:%S")
+                            }
+                            print(f"   📊 Статистика: ACTIVE={stats['active']}, "
+                                  f"IN_PROGRESS={stats['in_progress']}, "
+                                  f"COMPLETED={stats['completed']} ({stats['timestamp']})")
+                        
+                        # 4.5. Ждем 60 секунд перед следующей проверкой
+                        time.sleep(60)
+                        
+                    except Exception as task_error:
+                        print(f"   ❌ Ошибка в фоновой задаче: {task_error}")
+                        import traceback
+                        traceback.print_exc()
+                        
+                        # Пытаемся восстановить соединение с БД
+                        try:
+                            bg_db.rollback()
+                            # Проверяем соединение
+                            bg_db.execute(text("SELECT 1"))
+                        except:
+                            try:
+                                bg_db.close()
+                                bg_db = database.SessionLocal()
+                                print("   🔄 Переподключение к базе данных...")
+                            except:
+                                print("   ⚠️  Не удалось восстановить соединение с БД")
+                        
+                        # Ждем перед повторной попыткой
+                        time.sleep(30)
+            
+            # Запускаем фоновую задачу в отдельном потоке
+            import threading
+            background_thread = threading.Thread(
+                target=update_trip_statuses_task,
+                daemon=True,  # Поток завершится при завершении основного процесса
+                name="TripStatusUpdater"
+            )
+            background_thread.start()
+            
+            print("✅ Фоновая задача для обновления статусов запущена")
+            print(f"   ID потока: {background_thread.ident}")
+            print(f"   Имя потока: {background_thread.name}")
+            
+        except Exception as e:
+            print(f"❌ Ошибка запуска фоновой задачи: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # 5. Выводим информацию о конфигурации
+        print("⚙️  Конфигурация системы:")
+        print(f"   Database URL: {'PostgreSQL' if 'postgresql' in os.getenv('DATABASE_URL', '') else 'SQLite'}")
+        print(f"   API Host: 0.0.0.0")
+        print(f"   API Port: {os.getenv('PORT', 8000)}")
+        print(f"   Telegram Bot Token: {'✅ Установлен' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌ Отсутствует'}")
+        
+        # Проверяем наличие API-ключа Яндекс.Карт (опционально)
+        yandex_key = os.getenv("YANDEX_MAPS_API_KEY")
+        if yandex_key:
+            print(f"   Яндекс.Карты API: ✅ (ключ: {yandex_key[:10]}...)")
+        else:
+            print(f"   Яндекс.Карты API: ⚠️  Ключ не установлен в переменных окружения")
+        
+        print("=" * 60)
+        print("✅ Сервер успешно запущен и готов к работе!")
+        print("=" * 60)
+        
     except Exception as e:
-        print(f"❌ Ошибка инициализации базы данных: {e}")
+        print(f"❌ Критическая ошибка при запуске: {e}")
         import traceback
         traceback.print_exc()
-    
-    print("=" * 60)
+        print("=" * 60)
+        raise
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Действия при остановке"""
-    print("👋 Сервер останавливается")
-
+    """Действия при остановке сервера"""
+    print("\n" + "=" * 60)
+    print("🛑 ОСТАНОВКА TRAVEL COMPANION API")
+    print("=" * 60)
+    
+    try:
+        # Закрываем все соединения с базой данных
+        print("🔌 Закрытие соединений с базой данных...")
+        
+        # Можно добавить логику для graceful shutdown
+        # Например, ожидание завершения фоновых задач
+        
+        print("✅ Соединения закрыты")
+        
+    except Exception as e:
+        print(f"⚠️  Ошибка при остановке: {e}")
+    
+    print("👋 Сервер остановлен")
+    print("=" * 60)
 # =============== РОУТЫ ===============
 
 @app.get("/")
@@ -534,7 +794,7 @@ def create_trip(
     trip_data: DriverTripCreate = None,
     db: Session = Depends(database.get_db)
 ):
-    """Создать новую поездку"""
+    """Создать новую поездку с данными маршрута"""
     user = db.query(database.User).filter(
         database.User.telegram_id == telegram_id
     ).first()
@@ -542,13 +802,38 @@ def create_trip(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    trip_dict = trip_data.dict()
-    trip_dict["driver_id"] = user.id
-    trip_dict["start_city"] = extract_city(trip_data.start_address)
-    trip_dict["finish_city"] = extract_city(trip_data.finish_address)
-    trip_dict["total_price"] = trip_data.available_seats * trip_data.price_per_seat
+    # Извлекаем данные маршрута
+    route = trip_data.route_data
     
-    trip = database.DriverTrip(**trip_dict)
+    # Вычисляем предполагаемое время прибытия
+    departure_datetime = trip_data.departure_date
+    arrival_datetime = departure_datetime + timedelta(minutes=route.duration) if route.duration else departure_datetime
+    
+    # Создаем поездку
+    trip = database.DriverTrip(
+        driver_id=user.id,
+        departure_date=departure_datetime,
+        departure_time=trip_data.departure_time,
+        start_address=route.start_point.address or "Адрес не указан",
+        start_lat=route.start_point.lat,
+        start_lng=route.start_point.lng,
+        start_city=extract_city(route.start_point.address) if route.start_point.address else "",
+        finish_address=route.finish_point.address or "Адрес не указан",
+        finish_lat=route.finish_point.lat,
+        finish_lng=route.finish_point.lng,
+        finish_city=extract_city(route.finish_point.address) if route.finish_point.address else "",
+        start_coordinates={"lat": route.start_point.lat, "lng": route.start_point.lng},
+        finish_coordinates={"lat": route.finish_point.lat, "lng": route.finish_point.lng},
+        route_distance=route.distance,
+        route_duration=route.duration,
+        route_polyline=route.polyline,
+        available_seats=trip_data.available_seats,
+        price_per_seat=trip_data.price_per_seat,
+        total_price=trip_data.available_seats * trip_data.price_per_seat,
+        comment=trip_data.comment,
+        # Вычисляем время прибытия
+        estimated_arrival=arrival_datetime  # Нужно добавить это поле в модель DriverTrip
+    )
     
     db.add(trip)
     db.commit()
@@ -560,7 +845,8 @@ def create_trip(
     return {
         "success": True,
         "message": "Поездка создана успешно",
-        "trip_id": trip.id
+        "trip_id": trip.id,
+        "arrival_time": arrival_datetime.isoformat() if arrival_datetime else None
     }
 
 @app.get("/api/trips/{trip_id}")
