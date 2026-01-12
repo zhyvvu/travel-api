@@ -274,9 +274,6 @@ async def startup_event():
         # 4. Запускаем фоновую задачу для обновления статусов поездок
         print("🔄 Запуск фоновой задачи для обновления статусов...")
         try:
-            # Создаем новую сессию для фоновой задачи
-            bg_db = database.SessionLocal()
-            
             # Функция для фоновой задачи
             def update_trip_statuses_task():
                 """Фоновая задача для автоматического обновления статусов поездок"""
@@ -284,6 +281,13 @@ async def startup_event():
                 from datetime import datetime
                 
                 print("   📡 Фоновая задача запущена")
+                
+                # СОЗДАЕМ сессию внутри функции
+                try:
+                    bg_db = database.SessionLocal()
+                except Exception as db_error:
+                    print(f"   ❌ Не удалось создать сессию БД: {db_error}")
+                    return  # Завершаем задачу если не можем подключиться к БД
                 
                 while True:
                     try:
@@ -311,9 +315,9 @@ async def startup_event():
                         completed_count = 0
                         for trip in in_progress_trips:
                             # Определяем время завершения поездки
-                            if trip.estimated_arrival:
+                            if hasattr(trip, 'estimated_arrival') and trip.estimated_arrival:
                                 arrival_time = trip.estimated_arrival
-                            elif trip.route_duration:
+                            elif hasattr(trip, 'route_duration') and trip.route_duration:
                                 # Если есть длительность маршрута, добавляем ее к времени отправления
                                 from datetime import timedelta
                                 arrival_time = trip.departure_date + timedelta(minutes=trip.route_duration)
@@ -341,21 +345,24 @@ async def startup_event():
                             update_trip_statuses_task.cycle_count = 1
                         
                         if update_trip_statuses_task.cycle_count % 10 == 0:
-                            stats = {
-                                "active": bg_db.query(database.DriverTrip).filter(
-                                    database.DriverTrip.status == database.TripStatus.ACTIVE
-                                ).count(),
-                                "in_progress": bg_db.query(database.DriverTrip).filter(
-                                    database.DriverTrip.status == database.TripStatus.IN_PROGRESS
-                                ).count(),
-                                "completed": bg_db.query(database.DriverTrip).filter(
-                                    database.DriverTrip.status == database.TripStatus.COMPLETED
-                                ).count(),
-                                "timestamp": datetime.now().strftime("%H:%M:%S")
-                            }
-                            print(f"   📊 Статистика: ACTIVE={stats['active']}, "
-                                  f"IN_PROGRESS={stats['in_progress']}, "
-                                  f"COMPLETED={stats['completed']} ({stats['timestamp']})")
+                            try:
+                                stats = {
+                                    "active": bg_db.query(database.DriverTrip).filter(
+                                        database.DriverTrip.status == database.TripStatus.ACTIVE
+                                    ).count(),
+                                    "in_progress": bg_db.query(database.DriverTrip).filter(
+                                        database.DriverTrip.status == database.TripStatus.IN_PROGRESS
+                                    ).count(),
+                                    "completed": bg_db.query(database.DriverTrip).filter(
+                                        database.DriverTrip.status == database.TripStatus.COMPLETED
+                                    ).count(),
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                }
+                                print(f"   📊 Статистика: ACTIVE={stats['active']}, "
+                                    f"IN_PROGRESS={stats['in_progress']}, "
+                                    f"COMPLETED={stats['completed']} ({stats['timestamp']})")
+                            except Exception as stats_error:
+                                print(f"   ⚠️  Ошибка получения статистики: {stats_error}")
                         
                         # 4.5. Ждем 60 секунд перед следующей проверкой
                         time.sleep(60)
@@ -369,7 +376,9 @@ async def startup_event():
                         try:
                             bg_db.rollback()
                             # Проверяем соединение
+                            from sqlalchemy import text
                             bg_db.execute(text("SELECT 1"))
+                            print("   🔄 Соединение с БД восстановлено")
                         except:
                             try:
                                 bg_db.close()
@@ -377,6 +386,9 @@ async def startup_event():
                                 print("   🔄 Переподключение к базе данных...")
                             except:
                                 print("   ⚠️  Не удалось восстановить соединение с БД")
+                                # Ждем дольше перед повторной попыткой
+                                time.sleep(120)
+                                continue
                         
                         # Ждем перед повторной попыткой
                         time.sleep(30)
