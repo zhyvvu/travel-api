@@ -8,6 +8,9 @@ from datetime import datetime
 import sys
 import traceback
 from sqlalchemy import text
+import time
+from typing import Optional
+import json
 
 # Добавляем текущую директорию в путь для импорта
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -192,7 +195,243 @@ def get_db_session():
     except:
         return None
 
-# =============== ОБРАБОТЧИКИ ===============
+# =============== НОВЫЕ ФУНКЦИИ ДЛЯ WEB APP АВТОРИЗАЦИИ ===============
+
+def create_user_response(user):
+    """Создать JSON-ответ с данными пользователя"""
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "telegram_id": user.telegram_id,
+            "first_name": user.first_name,
+            "last_name": user.last_name or "",
+            "username": user.username or "",
+            "language_code": user.language_code or "ru",
+            "is_premium": getattr(user, 'is_premium', False),
+            "role": user.role if hasattr(user, 'role') else "passenger",
+            "has_car": getattr(user, 'has_car', False),
+            "car_model": getattr(user, 'car_model', None),
+            "car_color": getattr(user, 'car_color', None),
+            "car_plate": getattr(user, 'car_plate', None),
+            "car_type": getattr(user, 'car_type', None),
+            "car_seats": getattr(user, 'car_seats', None),
+            "total_driver_trips": getattr(user, 'total_driver_trips', 0),
+            "total_passenger_trips": getattr(user, 'total_passenger_trips', 0),
+            "driver_rating": float(getattr(user, 'driver_rating', 5.0)),
+            "passenger_rating": float(getattr(user, 'passenger_rating', 5.0))
+        },
+        "token": f"tg_{user.telegram_id}_{int(time.time())}"
+    }
+
+# =============== WEB HANDLERS ДЛЯ FASTAPI (добавим в main.py) ===============
+# Эти функции будут вызываться из main.py
+
+def handle_telegram_auth(user_data: dict):
+    """
+    Обработка авторизации через Telegram WebApp
+    """
+    try:
+        logger.info(f"📱 Запрос авторизации: {user_data}")
+        
+        # Извлекаем данные пользователя из разных форматов
+        if "user" in user_data:
+            # Формат: { "user": { ... } }
+            telegram_user = user_data["user"]
+        else:
+            # Формат: данные пользователя напрямую
+            telegram_user = user_data
+        
+        telegram_id = int(telegram_user.get("id"))
+        
+        if not telegram_id:
+            logger.error("❌ Telegram ID is required")
+            return {"success": False, "error": "Telegram ID is required"}
+        
+        # Получаем сессию базы данных
+        db = get_db_session()
+        if not db:
+            logger.error("❌ Database connection failed")
+            # Возвращаем тестового пользователя
+            return {
+                "success": True,
+                "user": {
+                    "id": 1,
+                    "telegram_id": telegram_id,
+                    "first_name": telegram_user.get("first_name", "Тестовый"),
+                    "last_name": telegram_user.get("last_name", "Пользователь"),
+                    "username": telegram_user.get("username", ""),
+                    "language_code": telegram_user.get("language_code", "ru"),
+                    "is_premium": telegram_user.get("is_premium", False),
+                    "role": "passenger",
+                    "has_car": False
+                },
+                "token": f"test_{telegram_id}_{int(time.time())}"
+            }
+        
+        try:
+            # Ищем существующего пользователя
+            user = db.query(database.User).filter(
+                database.User.telegram_id == telegram_id
+            ).first()
+            
+            if not user:
+                # Создаем нового пользователя
+                logger.info(f"👤 Создание нового пользователя: {telegram_id}")
+                
+                # Проверяем наличие необходимых атрибутов в модели
+                user_data_dict = {
+                    "telegram_id": telegram_id,
+                    "first_name": telegram_user.get("first_name", ""),
+                    "last_name": telegram_user.get("last_name", ""),
+                    "username": telegram_user.get("username", ""),
+                    "language_code": telegram_user.get("language_code", "ru"),
+                    "registration_date": datetime.utcnow(),
+                    "last_active": datetime.utcnow()
+                }
+                
+                # Добавляем дополнительные поля, если они есть в модели
+                if hasattr(database.User, 'is_premium'):
+                    user_data_dict['is_premium'] = telegram_user.get("is_premium", False)
+                
+                if hasattr(database.User, 'role'):
+                    user_data_dict['role'] = getattr(database, 'UserRole', type('obj', (), {'PASSENGER': 'passenger'})()).PASSENGER
+                
+                if hasattr(database.User, 'is_bot'):
+                    user_data_dict['is_bot'] = telegram_user.get("is_bot", False)
+                
+                # Создаем пользователя
+                user = database.User(**user_data_dict)
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                logger.info(f"✅ Пользователь создан: {user.id}")
+                
+            else:
+                # Обновляем существующего пользователя
+                logger.info(f"🔄 Обновление пользователя: {user.id}")
+                user.first_name = telegram_user.get("first_name", user.first_name)
+                user.last_name = telegram_user.get("last_name", user.last_name)
+                user.username = telegram_user.get("username", user.username)
+                user.language_code = telegram_user.get("language_code", user.language_code)
+                user.last_active = datetime.utcnow()
+                
+                if hasattr(user, 'is_premium'):
+                    user.is_premium = telegram_user.get("is_premium", getattr(user, 'is_premium', False))
+                
+                db.commit()
+                logger.info(f"✅ Пользователь обновлен: {user.id}")
+            
+            # Создаем ответ
+            response = create_user_response(user)
+            logger.info(f"✅ Авторизация успешна для пользователя: {telegram_id}")
+            
+            return response
+            
+        except Exception as db_error:
+            logger.error(f"❌ Ошибка работы с БД: {db_error}")
+            return {"success": False, "error": f"Database error: {str(db_error)}"}
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка авторизации: {e}")
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+def handle_simple_auth(user_data: dict):
+    """
+    Упрощенная авторизация для тестирования
+    """
+    try:
+        telegram_id = user_data.get("telegram_id")
+        if not telegram_id:
+            return {"success": False, "error": "No telegram_id"}
+        
+        logger.info(f"🔄 Упрощенная авторизация для: {telegram_id}")
+        
+        # Проверяем базу данных
+        db = get_db_session()
+        if db:
+            try:
+                user = db.query(database.User).filter(
+                    database.User.telegram_id == telegram_id
+                ).first()
+                
+                if user:
+                    response = create_user_response(user)
+                    db.close()
+                    return response
+                    
+                # Если пользователя нет, создаем
+                user = database.User(
+                    telegram_id=telegram_id,
+                    first_name=user_data.get("first_name", "Пользователь"),
+                    last_name=user_data.get("last_name", ""),
+                    username=user_data.get("username", ""),
+                    registration_date=datetime.utcnow(),
+                    last_active=datetime.utcnow()
+                )
+                
+                if hasattr(database.User, 'role'):
+                    user.role = getattr(database, 'UserRole', type('obj', (), {'PASSENGER': 'passenger'})()).PASSENGER
+                
+                if hasattr(database.User, 'language_code'):
+                    user.language_code = user_data.get("language_code", "ru")
+                
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                
+                response = create_user_response(user)
+                db.close()
+                return response
+                
+            except Exception as db_error:
+                logger.error(f"❌ Ошибка БД в простой авторизации: {db_error}")
+                db.close()
+        
+        # Если БД недоступна, возвращаем тестовые данные
+        logger.info("ℹ️ БД недоступна, возвращаем тестового пользователя")
+        return {
+            "success": True,
+            "user": {
+                "id": 999,
+                "telegram_id": telegram_id,
+                "first_name": user_data.get("first_name", "Тестовый"),
+                "last_name": user_data.get("last_name", "Пользователь"),
+                "username": user_data.get("username", "test_user"),
+                "language_code": user_data.get("language_code", "ru"),
+                "is_premium": False,
+                "role": "passenger",
+                "has_car": False,
+                "total_driver_trips": 0,
+                "total_passenger_trips": 0,
+                "driver_rating": 5.0,
+                "passenger_rating": 5.0
+            },
+            "token": f"simple_{telegram_id}_{int(time.time())}"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка простой авторизации: {e}")
+        return {"success": False, "error": str(e)}
+
+def handle_debug_check_auth(telegram_id: Optional[int] = None):
+    """Эндпоинт для отладки авторизации"""
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "telegram_id": telegram_id,
+        "has_user": telegram_id is not None,
+        "cors_enabled": True,
+        "service": "Travel Companion Auth",
+        "version": "3.0"
+    }
+
+# =============== ОБРАБОТЧИКИ ТЕЛЕГРАМ БОТА ===============
+
 async def help_no_db_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик кнопки помощи при отсутствии БД"""
     query = update.callback_query
@@ -307,7 +546,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             welcome_msg = "👋 Добро пожаловать! (режим без базы данных)"
             logger.info(f"Пользователь {user.id} - режим без БД")
         
-        # УПРОЩЕННЫЙ ТЕКСТ БЕЗ MARKDOWN (или с исправленной разметкой)
         welcome_text = f"""
 👋 Привет, {user.first_name or 'друг'}! {welcome_msg}
 
@@ -354,18 +592,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Отправляем БЕЗ parse_mode='Markdown' - используем обычный текст
         await update.message.reply_text(
             welcome_text,
             reply_markup=reply_markup,
-            parse_mode=None,  # Отключаем Markdown
+            parse_mode=None,
             disable_web_page_preview=True
         )
         
     except Exception as e:
         logger.error(f"Критическая ошибка в start command: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        traceback.print_exc()
         
         # Упрощенное сообщение на случай критической ошибки
         try:
@@ -394,13 +630,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 simple_text,
                 reply_markup=reply_markup,
-                parse_mode=None  # Отключаем Markdown
+                parse_mode=None
             )
             logger.info(f"Упрощенное сообщение отправлено пользователю {user.id}")
             
         except Exception as final_error:
             logger.critical(f"Даже упрощенное сообщение не отправилось: {final_error}")
-            # Последняя попытка - простой текст без форматирования
             try:
                 await update.message.reply_text(
                     f"Привет! Я бот Travel Companion. Используйте /help для помощи."
@@ -438,7 +673,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /my_trips - Мои поездки
 """
     
-    await update.message.reply_text(help_text, parse_mode=None)  # Без Markdown
+    await update.message.reply_text(help_text, parse_mode=None)
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /about"""
@@ -470,7 +705,7 @@ Travel Companion — это сервис для поиска попутчико�
 • Хостинг: GitHub Pages + Render.com
 """
     
-    await update.message.reply_text(about_text, parse_mode=None)  # Без Markdown
+    await update.message.reply_text(about_text, parse_mode=None)
 
 async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /app - быстрый доступ к приложению"""
@@ -496,7 +731,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Пользователь {user.id} запросил статистику")
     
-    # Проверяем доступность базы данных
     db_available = False
     try:
         if context.bot_data and 'db_available' in context.bot_data:
@@ -525,7 +759,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db_session()
     
     try:
-        # Получаем статистику из базы
         stats = {
             "users": db.query(database.User).count(),
             "drivers": db.query(database.User).filter(database.User.has_car == True).count(),
@@ -540,7 +773,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).count()
         }
         
-        # Получаем последние 5 пользователей
         recent_users = db.query(database.User).order_by(
             database.User.registration_date.desc()
         ).limit(5).all()
@@ -586,7 +818,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Пользователь {user.id} запросил профиль")
     
-    # Проверяем доступность базы данных
     db_available = False
     try:
         if context.bot_data and 'db_available' in context.bot_data:
@@ -615,7 +846,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db_session()
     
     try:
-        # Ищем пользователя в базе
         db_user = db.query(database.User).filter(
             database.User.telegram_id == user.id
         ).first()
@@ -627,7 +857,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Формируем текст профиля
         profile_text = f"""
 👤 *Ваш профиль*
 
@@ -690,7 +919,6 @@ async def my_trips_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Пользователь {user.id} запросил свои поездки")
     
-    # Проверяем доступность базы данных
     db_available = False
     try:
         if context.bot_data and 'db_available' in context.bot_data:
@@ -719,7 +947,6 @@ async def my_trips_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db_session()
     
     try:
-        # Ищем пользователя в базе
         db_user = db.query(database.User).filter(
             database.User.telegram_id == user.id
         ).first()
@@ -731,12 +958,10 @@ async def my_trips_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Поездки как водитель
         driver_trips = db.query(database.DriverTrip).filter(
             database.DriverTrip.driver_id == db_user.id
         ).order_by(database.DriverTrip.departure_date.desc()).limit(5).all()
         
-        # Бронирования как пассажир
         passenger_bookings = db.query(database.Booking).filter(
             database.Booking.passenger_id == db_user.id
         ).order_by(database.Booking.booked_at.desc()).limit(5).all()
@@ -871,7 +1096,6 @@ def main():
     print("🤖 ЗАПУСК TELEGRAM БОТА ДЛЯ TRAVEL COMPANION")
     print("=" * 60)
     
-    # Проверка конфигурации
     print("🔧 Конфигурация:")
     print(f"   Бот токен: {'✅ Установлен' if BOT_TOKEN else '❌ Отсутствует'}")
     print(f"   Mini App URL: {MINI_APP_URL}")
@@ -890,17 +1114,15 @@ def main():
         print("   Создайте файл .env и добавьте TELEGRAM_BOT_TOKEN=ваш_токен")
         return
     
-    # Проверка базы данных
     print("\n🗄️  Инициализация базы данных...")
     db_available = True
     
     try:
-        # Пытаемся подключиться к базе
         from sqlalchemy.orm import Session
-        from sqlalchemy import text  # <-- ИМПОРТ ТУТ
+        from sqlalchemy import text
         
         test_session = Session(database.engine)
-        test_session.execute(text("SELECT 1"))  # <-- ИСПРАВЛЕНИЕ ЗДЕСЬ
+        test_session.execute(text("SELECT 1"))
         test_session.close()
         print("✅ Подключение к базе данных успешно")
         
@@ -940,17 +1162,18 @@ def main():
     print("   • /profile - Профиль пользователя")
     print("   • /stats - Статистика системы")
     print("   • /my_trips - Мои поездки")
+    
+    print("\n🌐 WEB APP API функции:")
+    print("   • handle_telegram_auth() - Полная авторизация Telegram")
+    print("   • handle_simple_auth() - Упрощенная авторизация")
+    print("   • handle_debug_check_auth() - Отладка авторизации")
     print("=" * 60)
     
     try:
-        # Создаем приложение
-        print("🚀 Создание приложения Telegram...")
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Сохраняем флаг доступности базы в контекст бота
         application.bot_data['db_available'] = db_available
         
-        # Регистрируем обработчики
         print("🔗 Регистрация обработчиков команд...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
@@ -962,7 +1185,6 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(CallbackQueryHandler(help_no_db_callback, pattern="^help_no_db$"))
         
-        # Обработчик ошибок
         application.add_error_handler(error_handler)
         
         print("✅ Бот запущен успешно!")
@@ -970,7 +1192,6 @@ def main():
         print("⚠️  Для остановки нажмите Ctrl+C")
         print("=" * 60)
         
-        # Запускаем бота
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,

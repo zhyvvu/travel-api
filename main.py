@@ -18,13 +18,86 @@ import hmac
 import os
 import sys
 
+from minimal_bot import (
+    handle_telegram_auth, 
+    handle_simple_auth, 
+    handle_debug_check_auth
+)
+
+def format_user_response(user: database.User) -> dict:
+    """Форматирует ответ с данными пользователя"""
+    return {
+        "id": user.id,
+        "telegram_id": user.telegram_id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "username": user.username,
+        "has_car": user.has_car,
+        "car_info": {
+            "model": user.car_model,
+            "color": user.car_color,
+            "plate": user.car_plate,
+            "type": user.car_type.value if user.car_type else None,
+            "seats": user.car_seats
+        } if user.has_car else None,
+        "ratings": {
+            "driver": user.driver_rating,
+            "passenger": user.passenger_rating
+        },
+        "stats": {
+            "driver_trips": user.total_driver_trips,
+            "passenger_trips": user.total_passenger_trips
+        },
+        "role": user.role.value if user.role else "passenger",
+        "phone": user.phone
+    }
+
+def format_trip_response(trip: database.DriverTrip) -> dict:
+    """Форматирует ответ с данными поездки"""
+    driver = trip.driver
+    return {
+        "id": trip.id,
+        "driver": {
+            "id": driver.id,
+            "name": f"{driver.first_name} {driver.last_name or ''}".strip(),
+            "rating": driver.driver_rating,
+            "phone": driver.phone
+        },
+        "route": {
+            "from": trip.start_address,
+            "to": trip.finish_address,
+            "from_city": trip.start_city,
+            "to_city": trip.finish_city
+        },
+        "departure": {
+            "date": trip.departure_date.strftime("%Y-%m-%d"),
+            "time": trip.departure_time,
+            "datetime": trip.departure_date.strftime("%d.%m.%Y %H:%M")
+        },
+        "seats": {
+            "available": trip.available_seats,
+            "price_per_seat": trip.price_per_seat
+        },
+        "details": {
+            "comment": trip.comment
+        },
+        "car_info": {
+            "model": driver.car_model,
+            "color": driver.car_color,
+            "plate": driver.car_plate,
+            "type": driver.car_type.value if driver.car_type else None
+        } if driver.has_car else None,
+        "status": trip.status.value,
+        "estimated_arrival": trip.estimated_arrival.isoformat() if hasattr(trip, 'estimated_arrival') and trip.estimated_arrival else None
+    }
+
 def update_trip_statuses(db: Session):
     """Фоновая задача для обновления статусов поездок"""
     while True:
         try:
             now = datetime.utcnow()
             
-            # Обновляем поездки в пути
+            # 1. Обновляем поездки в пути
             active_trips = db.query(database.DriverTrip).filter(
                 database.DriverTrip.status == database.TripStatus.ACTIVE,
                 database.DriverTrip.departure_date <= now
@@ -32,8 +105,9 @@ def update_trip_statuses(db: Session):
             
             for trip in active_trips:
                 trip.status = database.TripStatus.IN_PROGRESS
+                trip.updated_at = now
             
-            # Обновляем завершенные поездки
+            # 2. Обновляем завершенные поездки
             in_progress_trips = db.query(database.DriverTrip).filter(
                 database.DriverTrip.status == database.TripStatus.IN_PROGRESS,
                 database.DriverTrip.estimated_arrival <= now
@@ -41,6 +115,7 @@ def update_trip_statuses(db: Session):
             
             for trip in in_progress_trips:
                 trip.status = database.TripStatus.COMPLETED
+                trip.updated_at = now
             
             db.commit()
             
@@ -88,8 +163,8 @@ class TelegramUser(BaseModel):
     first_name: str
     last_name: Optional[str] = None
     username: Optional[str] = None
-    language_code: Optional[str] = None
-    is_premium: Optional[bool] = None
+    language_code: Optional[str] = "ru"  # Добавил значение по умолчанию
+    is_premium: bool = False  # Значение по умолчанию
     photo_url: Optional[str] = None
 
 class LoginRequest(BaseModel):
@@ -175,9 +250,15 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://zhyvvu.github.io",  # Ваш GitHub Pages
+        "https://zhyvvu.github.io/travel-companion-app/",
+        "http://localhost:5500",      # Для локальной разработки
+        "http://localhost:8000",
+        "*"  # На время отладки, потом удалите
+    ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -197,9 +278,6 @@ async def add_telegram_user(request: Request, call_next):
     response = await call_next(request)
     return response
 
-# =============== STARTUP EVENT ===============
-# =============== STARTUP EVENT ===============
-@app.on_event("startup")
 # =============== STARTUP EVENT ===============
 @app.on_event("startup")
 async def startup_event():
@@ -541,15 +619,18 @@ def home():
     return {
         "project": "Travel Companion",
         "version": "3.0",
-        "description": "Сервис поиска попутчиков с Telegram авторизацией",
+        "description": "Сервис поиска попутчиков с Telegram авторизацией и картами",
         "status": "active",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "docs": "/docs",
+        "health": "/health",
+        "api_base": "/api"
     }
 
 # =============== TELEGRAM АВТОРИЗАЦИЯ ===============
 @app.post("/api/auth/telegram")
 async def telegram_auth(login_data: Dict[str, Any] = None, db: Session = Depends(database.get_db)):
-    """Авторизация через Telegram Web App"""
+    """Авторизация через Telegram WebApp"""
     try:
         print(f"🔐 Auth request received")
         
@@ -570,86 +651,42 @@ async def telegram_auth(login_data: Dict[str, Any] = None, db: Session = Depends
             print(f"❌ No user data found")
             raise HTTPException(status_code=400, detail="Необходимы данные пользователя")
         
-        telegram_id = user_data.get('id')
-        if not telegram_id:
-            raise HTTPException(status_code=400, detail="Отсутствует ID пользователя")
+        # Используем улучшенную функцию из minimal_bot.py
+        auth_result = handle_telegram_auth(user_data)
         
-        print(f"🆔 Telegram ID: {telegram_id}")
-        
-        # Проверяем существование пользователя
-        user = db.query(database.User).filter(
-            database.User.telegram_id == telegram_id
-        ).first()
-        
-        if not user:
-            # Создаем нового пользователя
-            user = database.User(
-                telegram_id=telegram_id,
-                username=user_data.get('username'),
-                first_name=user_data.get('first_name', ''),
-                last_name=user_data.get('last_name'),
-                language_code=user_data.get('language_code', 'ru'),
-                is_bot=False,
-                registration_date=datetime.utcnow(),
-                last_active=datetime.utcnow(),
-                role=database.UserRole.PASSENGER
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            message = "Новый пользователь зарегистрирован"
-            print(f"✅ New user created: {user.first_name}")
+        if auth_result.get("success"):
+            print(f"✅ Auth successful for Telegram ID: {user_data.get('id')}")
+            return auth_result
         else:
-            # Обновляем данные
-            user.username = user_data.get('username') or user.username
-            user.first_name = user_data.get('first_name', user.first_name)
-            user.last_name = user_data.get('last_name') or user.last_name
-            user.language_code = user_data.get('language_code') or user.language_code
-            user.last_active = datetime.utcnow()
-            db.commit()
-            message = "Пользователь авторизован"
-            print(f"✅ User updated: {user.first_name}")
-        
-        # Создаем токен сессии
-        session_token = f"telegram_{telegram_id}_{datetime.utcnow().timestamp()}"
-        
-        return {
-            "success": True,
-            "message": message,
-            "token": session_token,
-            "user": {
-                "id": user.id,
-                "telegram_id": user.telegram_id,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "username": user.username,
-                "has_car": user.has_car,
-                "car_info": {
-                    "model": user.car_model,
-                    "color": user.car_color,
-                    "plate": user.car_plate,
-                    "type": user.car_type.value if user.car_type else None,
-                    "seats": user.car_seats
-                } if user.has_car else None,
-                "ratings": {
-                    "driver": user.driver_rating,
-                    "passenger": user.passenger_rating
-                },
-                "stats": {
-                    "driver_trips": user.total_driver_trips,
-                    "passenger_trips": user.total_passenger_trips
-                },
-                "role": user.role.value if user.role else "passenger",
-                "phone": user.phone
-            }
-        }
-        
+            print(f"❌ Auth failed: {auth_result.get('error')}")
+            raise HTTPException(status_code=401, detail=auth_result.get('error', 'Auth failed'))
+            
     except HTTPException:
         raise
     except Exception as e:
         print(f"❌ Auth error: {str(e)}")
-        db.rollback()
         raise HTTPException(status_code=500, detail=f"Ошибка авторизации: {str(e)}")
+    
+@app.post("/api/auth/simple")
+async def simple_auth(user_data: dict):
+    """Упрощенная авторизация для тестирования"""
+    try:
+        print(f"🔄 Simple auth request: {user_data.get('telegram_id')}")
+        result = handle_simple_auth(user_data)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get('error', 'Auth failed'))
+            
+        return result
+        
+    except Exception as e:
+        print(f"❌ Simple auth error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/debug/check-auth")
+async def debug_check_auth(telegram_id: Optional[int] = Query(None)):
+    """Эндпоинт для отладки авторизации"""
+    return handle_debug_check_auth(telegram_id)
 
 @app.get("/api/auth/me")
 def get_current_user(
@@ -669,31 +706,7 @@ def get_current_user(
     
     return {
         "success": True,
-        "user": {
-            "id": user.id,
-            "telegram_id": user.telegram_id,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "username": user.username,
-            "has_car": user.has_car,
-            "car_info": {
-                "model": user.car_model,
-                "color": user.car_color,
-                "plate": user.car_plate,
-                "type": user.car_type.value if user.car_type else None,
-                "seats": user.car_seats
-            } if user.has_car else None,
-            "ratings": {
-                "driver": user.driver_rating,
-                "passenger": user.passenger_rating
-            },
-            "stats": {
-                "driver_trips": user.total_driver_trips,
-                "passenger_trips": user.total_passenger_trips
-            },
-            "role": user.role.value if user.role else None,
-            "phone": user.phone
-        }
+        "user": format_user_response(user)
     }
 
 # =============== ПОЛЬЗОВАТЕЛИ ===============
@@ -756,6 +769,7 @@ def search_trips(
     except ValueError:
         raise HTTPException(status_code=400, detail="Неверный формат даты. Используйте YYYY-MM-DD")
     
+    # Базовый запрос
     query = db.query(database.DriverTrip).filter(
         database.DriverTrip.status == database.TripStatus.ACTIVE,
         database.DriverTrip.available_seats >= search_query.passengers,
@@ -763,6 +777,7 @@ def search_trips(
         database.DriverTrip.departure_date < date_obj + timedelta(days=1)
     )
     
+    # Добавляем фильтры по городам
     if search_query.from_city:
         query = query.filter(or_(
             database.DriverTrip.start_city.ilike(f"%{search_query.from_city}%"),
@@ -775,26 +790,27 @@ def search_trips(
             database.DriverTrip.finish_address.ilike(f"%{search_query.to_city}%")
         ))
     
-    query = query.order_by(
+    # Фильтр по цене
+    if search_query.max_price:
+        query = query.filter(database.DriverTrip.price_per_seat <= search_query.max_price)
+    
+    # Сортировка
+    trips = query.order_by(
         database.DriverTrip.departure_date,
         database.DriverTrip.price_per_seat
-    )
+    ).all()
     
-    trips = query.all()
-    
-    if search_query.max_price:
-        trips = [t for t in trips if t.price_per_seat <= search_query.max_price]
-    
+    # Формируем ответ
     result = []
     for trip in trips:
         driver = trip.driver
-        
         result.append({
             "id": trip.id,
             "driver": {
                 "id": driver.id,
                 "name": f"{driver.first_name} {driver.last_name or ''}".strip(),
-                "rating": driver.driver_rating
+                "rating": driver.driver_rating,
+                "avatar_initials": f"{driver.first_name[0]}{driver.last_name[0] if driver.last_name else ''}"
             },
             "route": {
                 "from": trip.start_address,
@@ -811,9 +827,15 @@ def search_trips(
                 "available": trip.available_seats,
                 "price_per_seat": trip.price_per_seat
             },
+            "car_info": {
+                "model": driver.car_model,
+                "color": driver.car_color
+            } if driver.has_car else None,
             "details": {
                 "comment": trip.comment
-            }
+            },
+            "status": trip.status.value,
+            "estimated_arrival": trip.estimated_arrival.isoformat() if hasattr(trip, 'estimated_arrival') and trip.estimated_arrival else None
         })
     
     return {
@@ -1322,11 +1344,21 @@ def get_full_user_profile(
 
 # =============== HEALTH CHECK ===============
 @app.get("/health")
-def health_check():
+def health_check(db: Session = Depends(database.get_db)):
     """Проверка состояния API"""
+    try:
+        # Проверяем подключение к БД
+        db.execute("SELECT 1")
+        db_status = "connected"
+    except:
+        db_status = "disconnected"
+    
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat()
+        "database": db_status,
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "Travel Companion API",
+        "version": "3.0"
     }
 
 @app.get("/api/debug/users")
