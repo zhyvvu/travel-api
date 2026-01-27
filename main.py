@@ -92,39 +92,24 @@ def format_trip_response(trip: database.DriverTrip) -> dict:
     }
 
 def update_trip_statuses(db: Session):
-    """Фоновая задача для обновления статусов поездок"""
-    while True:
-        try:
-            now = datetime.utcnow()
-            
-            # 1. Обновляем поездки в пути
-            active_trips = db.query(database.DriverTrip).filter(
-                database.DriverTrip.status == database.TripStatus.ACTIVE,
-                database.DriverTrip.departure_date <= now
-            ).all()
-            
-            for trip in active_trips:
-                trip.status = database.TripStatus.IN_PROGRESS
-                trip.updated_at = now
-            
-            # 2. Обновляем завершенные поездки
-            in_progress_trips = db.query(database.DriverTrip).filter(
-                database.DriverTrip.status == database.TripStatus.IN_PROGRESS,
-                database.DriverTrip.estimated_arrival <= now
-            ).all()
-            
-            for trip in in_progress_trips:
-                trip.status = database.TripStatus.COMPLETED
-                trip.updated_at = now
-            
-            db.commit()
-            
-        except Exception as e:
-            print(f"Ошибка в фоновой задаче: {e}")
-            db.rollback()
+    """Автоматически завершает поездки, когда время в пути вышло"""
+    now = datetime.utcnow()
+    
+    # Получаем все активные поездки водителей
+    trips = db.query(database.DriverTrip).filter(
+        database.DriverTrip.status == database.TripStatus.ACTIVE
+    ).all()
+    
+    for trip in trips:
+        # Рассчитываем время завершения: старт + длительность + 15 мин буфер
+        duration = trip.route_duration or 0
+        arrival_time = trip.departure_date + timedelta(minutes=duration + 15)
         
-        # Ждем 5 минут перед следующей проверкой
-        time.sleep(300)
+        if arrival_time < now:
+            trip.status = database.TripStatus.COMPLETED
+            print(f"Поездка {trip.id} автоматически завершена")
+            
+    db.commit()
 
 # Добавляем текущую директорию в путь для импорта
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -172,16 +157,15 @@ class LoginRequest(BaseModel):
     user: Optional[TelegramUser] = None
 
 # 3. Поездки
-class DriverTripCreate(BaseModel):
-    # Основные поля
-    departure_date: datetime
-    departure_time: str = Field(..., pattern=r'^([0-1][0-9]|2[0-3]):[0-5][0-9]$')
-    available_seats: int = Field(..., ge=1, le=10)
-    price_per_seat: float = Field(..., gt=0)
-    comment: Optional[str] = None
-    
-    # Данные маршрута (вместо простых адресов)
-    route_data: RouteData
+class TripCreate(BaseModel):
+    from_city: str
+    to_city: str
+    departure_time: str # ISO строка
+    route_duration: Optional[int] = 0  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
+    seats_available: int = Field(gt=0)
+    price: float = Field(ge=0)
+    description: Optional[str] = None
+    route_data: Optional[Dict[str, Any]] = None
 
 class BookingCreate(BaseModel):
     driver_trip_id: int
@@ -907,65 +891,45 @@ def get_my_trips(
     }
 
 @app.post("/api/trips/create")
-def create_trip(
-    telegram_id: int = Query(..., description="Telegram ID пользователя"),
-    trip_data: DriverTripCreate = None,
-    db: Session = Depends(database.get_db)
-):
-    """Создать новую поездку с данными маршрута"""
-    user = db.query(database.User).filter(
-        database.User.telegram_id == telegram_id
-    ).first()
-    
+def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), user_id: int = Query(...)):
+    user = db.query(database.User).filter(database.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    # Извлекаем данные маршрута
-    route = trip_data.route_data
+    # Создаем словарь данных на основе твоей существующей логики
+    new_trip_data = {
+        "driver_id": user.id,
+        "from_city": trip_data.from_city,
+        "to_city": trip_data.to_city,
+        "seats_available": trip_data.seats_available,
+        "price": trip_data.price,
+        "description": trip_data.description,
+        "status": database.TripStatus.ACTIVE,
+        "route_data": trip_data.route_data,
+        "route_duration": trip_data.route_duration  # Добавляем сохранение длительности
+    }
     
-    # Вычисляем предполагаемое время прибытия
-    departure_datetime = trip_data.departure_date
-    arrival_datetime = departure_datetime + timedelta(minutes=route.duration) if route.duration else departure_datetime
+    # Обработка даты (твоя логика парсинга ISO строки)
+    try:
+        dt_str = trip_data.departure_time.replace('Z', '+00:00')
+        new_trip_data["departure_date"] = datetime.fromisoformat(dt_str)
+    except Exception as e:
+        print(f"Ошибка парсинга даты: {e}")
+        new_trip_data["departure_date"] = datetime.utcnow() + timedelta(hours=2)
+
+    # Создаем запись в таблице DriverTrip
+    db_trip = database.DriverTrip(**new_trip_data)
     
-    # Создаем поездку
-    trip = database.DriverTrip(
-        driver_id=user.id,
-        departure_date=departure_datetime,
-        departure_time=trip_data.departure_time,
-        start_address=route.start_point.address or "Адрес не указан",
-        start_lat=route.start_point.lat,
-        start_lng=route.start_point.lng,
-        start_city=extract_city(route.start_point.address) if route.start_point.address else "",
-        finish_address=route.finish_point.address or "Адрес не указан",
-        finish_lat=route.finish_point.lat,
-        finish_lng=route.finish_point.lng,
-        finish_city=extract_city(route.finish_point.address) if route.finish_point.address else "",
-        start_coordinates={"lat": route.start_point.lat, "lng": route.start_point.lng},
-        finish_coordinates={"lat": route.finish_point.lat, "lng": route.finish_point.lng},
-        route_distance=route.distance,
-        route_duration=route.duration,
-        route_polyline=route.polyline,
-        available_seats=trip_data.available_seats,
-        price_per_seat=trip_data.price_per_seat,
-        total_price=trip_data.available_seats * trip_data.price_per_seat,
-        comment=trip_data.comment,
-        # Вычисляем время прибытия
-        estimated_arrival=arrival_datetime  # Нужно добавить это поле в модель DriverTrip
-    )
-    
-    db.add(trip)
+    db.add(db_trip)
     db.commit()
-    db.refresh(trip)
-    
-    user.total_driver_trips += 1
-    db.commit()
+    db.refresh(db_trip)
     
     return {
-        "success": True,
-        "message": "Поездка создана успешно",
-        "trip_id": trip.id,
-        "arrival_time": arrival_datetime.isoformat() if arrival_datetime else None
+        "success": True, 
+        "trip_id": db_trip.id,
+        "message": "Поездка успешно создана"
     }
+
 
 @app.get("/api/trips/{trip_id}")
 def get_trip_details(
