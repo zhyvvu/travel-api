@@ -896,28 +896,52 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    # Собираем данные для DriverTrip (точно по твоей структуре)
+    # Извлекаем координаты для удобства
+    start_coords = trip_data.route_data.get('start_point', {})
+    finish_coords = trip_data.route_data.get('finish_point', {})
+
+    # Собираем данные СТРОГО по твоей модели DriverTrip
     new_trip_data = {
         "driver_id": user.id,
-        "from_city": trip_data.from_city,
-        "to_city": trip_data.to_city,
-        "seats_available": trip_data.seats_available,
-        "price": trip_data.price,
-        "description": trip_data.description,
+        
+        # Локации (используем данные из route_data)
+        "start_address": start_coords.get('address', 'Точка на карте'),
+        "start_city": start_coords.get('city', 'Не указан'),
+        "start_lat": start_coords.get('lat'),
+        "start_lng": start_coords.get('lng'),
+        
+        "finish_address": finish_coords.get('address', 'Точка на карте'),
+        "finish_city": finish_coords.get('city', 'Не указан'),
+        "finish_lat": finish_coords.get('lat'),
+        "finish_lng": finish_coords.get('lng'),
+        
+        # Данные маршрута
+        "route_distance": trip_data.route_data.get('distance', 0),
+        "route_duration": trip_data.route_duration,
+        "start_coordinates": start_coords, # JSON поле
+        "finish_coordinates": finish_coords, # JSON поле
+        
+        # Детали поездки (названия полей из твоей модели)
+        "available_seats": trip_data.seats_available,
+        "price_per_seat": trip_data.price,
+        "comment": trip_data.description,
+        
+        # Статус
         "status": database.TripStatus.ACTIVE,
-        "route_data": trip_data.route_data,
-        "route_duration": trip_data.route_duration  # Используем существующее поле
     }
     
-    # Твоя логика обработки даты
+    # Обработка даты (твоя логика)
     try:
         dt_str = trip_data.departure_time.replace('Z', '+00:00')
-        new_trip_data["departure_date"] = datetime.fromisoformat(dt_str)
+        departure_dt = datetime.fromisoformat(dt_str)
+        new_trip_data["departure_date"] = departure_dt
+        new_trip_data["departure_time"] = departure_dt.strftime("%H:%M")
     except Exception as e:
         print(f"Ошибка парсинга даты: {e}")
-        new_trip_data["departure_date"] = datetime.utcnow() + timedelta(hours=2)
+        new_trip_data["departure_date"] = datetime.utcnow()
+        new_trip_data["departure_time"] = "00:00"
 
-    # Создаем объект модели DriverTrip
+    # Создаем объект модели
     db_trip = database.DriverTrip(**new_trip_data)
     
     db.add(db_trip)
