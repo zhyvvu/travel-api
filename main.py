@@ -890,7 +890,7 @@ def get_my_trips(
         "trips": result
     }
 
-@app.post("/api/trips")
+@app.post("/api/trips/create")
 def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), user_id: int = Query(...)):
     user = db.query(database.User).filter(database.User.id == user_id).first()
     if not user:
