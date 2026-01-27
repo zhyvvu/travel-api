@@ -92,16 +92,16 @@ def format_trip_response(trip: database.DriverTrip) -> dict:
     }
 
 def update_trip_statuses(db: Session):
-    """Автоматически завершает поездки, когда время в пути вышло"""
+    """Автоматическое завершение поездок по истечении времени"""
     now = datetime.utcnow()
     
-    # Получаем все активные поездки водителей
+    # В твоей базе модель называется DriverTrip
     trips = db.query(database.DriverTrip).filter(
         database.DriverTrip.status == database.TripStatus.ACTIVE
     ).all()
     
     for trip in trips:
-        # Рассчитываем время завершения: старт + длительность + 15 мин буфер
+        # Время завершения = Выезд + Длительность (из БД) + 15 мин запас
         duration = trip.route_duration or 0
         arrival_time = trip.departure_date + timedelta(minutes=duration + 15)
         
@@ -160,8 +160,8 @@ class LoginRequest(BaseModel):
 class TripCreate(BaseModel):
     from_city: str
     to_city: str
-    departure_time: str # ISO строка
-    route_duration: Optional[int] = 0  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
+    departure_time: str
+    route_duration: Optional[int] = 0  # Добавили для приема времени с фронтенда
     seats_available: int = Field(gt=0)
     price: float = Field(ge=0)
     description: Optional[str] = None
@@ -890,13 +890,13 @@ def get_my_trips(
         "trips": result
     }
 
-@app.post("/api/trips/create")
+@app.post("/api/trips")
 def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), user_id: int = Query(...)):
     user = db.query(database.User).filter(database.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    # Создаем словарь данных на основе твоей существующей логики
+    # Собираем данные для DriverTrip (точно по твоей структуре)
     new_trip_data = {
         "driver_id": user.id,
         "from_city": trip_data.from_city,
@@ -906,10 +906,10 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
         "description": trip_data.description,
         "status": database.TripStatus.ACTIVE,
         "route_data": trip_data.route_data,
-        "route_duration": trip_data.route_duration  # Добавляем сохранение длительности
+        "route_duration": trip_data.route_duration  # Используем существующее поле
     }
     
-    # Обработка даты (твоя логика парсинга ISO строки)
+    # Твоя логика обработки даты
     try:
         dt_str = trip_data.departure_time.replace('Z', '+00:00')
         new_trip_data["departure_date"] = datetime.fromisoformat(dt_str)
@@ -917,19 +917,14 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
         print(f"Ошибка парсинга даты: {e}")
         new_trip_data["departure_date"] = datetime.utcnow() + timedelta(hours=2)
 
-    # Создаем запись в таблице DriverTrip
+    # Создаем объект модели DriverTrip
     db_trip = database.DriverTrip(**new_trip_data)
     
     db.add(db_trip)
     db.commit()
     db.refresh(db_trip)
     
-    return {
-        "success": True, 
-        "trip_id": db_trip.id,
-        "message": "Поездка успешно создана"
-    }
-
+    return {"success": True, "trip_id": db_trip.id}
 
 @app.get("/api/trips/{trip_id}")
 def get_trip_details(
