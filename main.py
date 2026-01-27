@@ -932,17 +932,20 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
     
     # Обработка даты (твоя логика)
     try:
-        dt_str = trip_data.departure_time.replace('Z', '+00:00')
-        departure_dt = datetime.fromisoformat(dt_str)
+        # Теперь departure_time приходит как "2023-10-27T10:00"
+        # Мы просто превращаем это в объект datetime
+        departure_dt = datetime.fromisoformat(trip_data.departure_time)
+        
         new_trip_data["departure_date"] = departure_dt
         new_trip_data["departure_time"] = departure_dt.strftime("%H:%M")
     except Exception as e:
         print(f"Ошибка парсинга даты: {e}")
-        new_trip_data["departure_date"] = datetime.utcnow()
+        # Если что-то пошло не так, ставим текущее время + 3 часа (МСК) как заглушку
+        new_trip_data["departure_date"] = datetime.utcnow() + timedelta(hours=3)
         new_trip_data["departure_time"] = "00:00"
 
-    # Создаем объект модели
-    db_trip = database.DriverTrip(**new_trip_data)
+        # Создаем объект модели
+        db_trip = database.DriverTrip(**new_trip_data)
     
     db.add(db_trip)
     db.commit()
