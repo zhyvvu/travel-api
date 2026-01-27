@@ -932,26 +932,37 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
     
     # Обработка даты (твоя логика)
     try:
-        # Теперь departure_time приходит как "2023-10-27T10:00"
-        # Мы просто превращаем это в объект datetime
-        departure_dt = datetime.fromisoformat(trip_data.departure_time)
+        # Принимаем строку вида "2023-10-27T12:00" или "2023-10-27 12:00"
+        raw_dt = trip_data.departure_time.replace('T', ' ')
+        # Убираем лишние символы, если они просочились (Z или +00:00)
+        raw_dt = raw_dt.replace('Z', '').split('+')[0]
+        
+        departure_dt = datetime.fromisoformat(raw_dt)
         
         new_trip_data["departure_date"] = departure_dt
         new_trip_data["departure_time"] = departure_dt.strftime("%H:%M")
     except Exception as e:
-        print(f"Ошибка парсинга даты: {e}")
-        # Если что-то пошло не так, ставим текущее время + 3 часа (МСК) как заглушку
-        new_trip_data["departure_date"] = datetime.utcnow() + timedelta(hours=3)
-        new_trip_data["departure_time"] = "00:00"
+        print(f"❌ Ошибка парсинга даты: {e}")
+        # Заглушка: текущее время + 3 часа (если не вышло распарсить)
+        new_trip_data["departure_date"] = datetime.now()
+        new_trip_data["departure_time"] = datetime.now().strftime("%H:%M")
 
-        # Создаем объект модели
+    # Создаем объект модели
+    try:
         db_trip = database.DriverTrip(**new_trip_data)
+        db.add(db_trip)
+        db.commit()
+        db.refresh(db_trip)
+        return {"success": True, "trip_id": db_trip.id}
+    except Exception as db_e:
+        db.rollback()
+        print(f"❌ Ошибка базы данных: {db_e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(db_e)}")
     
-    db.add(db_trip)
-    db.commit()
-    db.refresh(db_trip)
-    
-    return {"success": True, "trip_id": db_trip.id}
+    #db.add(db_trip)
+    #db.commit()
+    #db.refresh(db_trip)
+    #return {"success": True, "trip_id": db_trip.id}
 
 @app.get("/api/trips/{trip_id}")
 def get_trip_details(
