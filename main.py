@@ -749,15 +749,26 @@ def search_trips(
 ):
     """Поиск доступных поездок"""
     try:
+        # Дата, выбранная пользователем в календаре
         date_obj = datetime.strptime(search_query.date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail="Неверный формат даты. Используйте YYYY-MM-DD")
     
+    # Определяем "нижнюю границу" времени. 
+    # Если дата сегодня — берем текущее время. Если завтра и позже — начало дня.
+    now = datetime.now()
+    if date_obj.date() == now.date():
+        lower_bound = now
+    else:
+        lower_bound = date_obj
+
     # Базовый запрос
     query = db.query(database.DriverTrip).filter(
         database.DriverTrip.status == database.TripStatus.ACTIVE,
         database.DriverTrip.available_seats >= search_query.passengers,
-        database.DriverTrip.departure_date >= date_obj,
+        # Фильтр 1: Поездка должна быть не раньше нижнего порога (текущего часа или начала дня)
+        database.DriverTrip.departure_date >= lower_bound,
+        # Фильтр 2: Поездка должна быть в пределах выбранного дня (до полуночи)
         database.DriverTrip.departure_date < date_obj + timedelta(days=1)
     )
     
@@ -778,10 +789,10 @@ def search_trips(
     if search_query.max_price:
         query = query.filter(database.DriverTrip.price_per_seat <= search_query.max_price)
     
-    # Сортировка
+    # Сортировка: сначала самые ближайшие
     trips = query.order_by(
-        database.DriverTrip.departure_date,
-        database.DriverTrip.price_per_seat
+        database.DriverTrip.departure_date.asc(), 
+        database.DriverTrip.price_per_seat.asc()
     ).all()
     
     # Формируем ответ
@@ -896,58 +907,47 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    # Извлекаем координаты для удобства
     start_coords = trip_data.route_data.get('start_point', {})
     finish_coords = trip_data.route_data.get('finish_point', {})
 
-    # Собираем данные СТРОГО по твоей модели DriverTrip
+    # Обработка даты
+    try:
+        raw_dt = trip_data.departure_time.replace('T', ' ')
+        raw_dt = raw_dt.replace('Z', '').split('+')[0]
+        departure_dt = datetime.fromisoformat(raw_dt)
+        
+        # ПРОВЕРКА: Не даем создать поездку в прошлом
+        if departure_dt < datetime.now():
+            raise HTTPException(status_code=400, detail="Нельзя создать поездку в прошлом")
+            
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"❌ Ошибка даты: {e}")
+        departure_dt = datetime.now()
+
     new_trip_data = {
         "driver_id": user.id,
-        
-        # Локации (используем данные из route_data)
         "start_address": start_coords.get('address', 'Точка на карте'),
         "start_city": start_coords.get('city', 'Не указан'),
         "start_lat": start_coords.get('lat'),
         "start_lng": start_coords.get('lng'),
-        
         "finish_address": finish_coords.get('address', 'Точка на карте'),
         "finish_city": finish_coords.get('city', 'Не указан'),
         "finish_lat": finish_coords.get('lat'),
         "finish_lng": finish_coords.get('lng'),
-        
-        # Данные маршрута
         "route_distance": trip_data.route_data.get('distance', 0),
         "route_duration": trip_data.route_duration,
-        "start_coordinates": start_coords, # JSON поле
-        "finish_coordinates": finish_coords, # JSON поле
-        
-        # Детали поездки (названия полей из твоей модели)
+        "start_coordinates": start_coords,
+        "finish_coordinates": finish_coords,
         "available_seats": trip_data.seats_available,
         "price_per_seat": trip_data.price,
         "comment": trip_data.description,
-        
-        # Статус
         "status": database.TripStatus.ACTIVE,
+        "departure_date": departure_dt, # Сохраняем как DateTime
+        "departure_time": departure_dt.strftime("%H:%M")
     }
     
-    # Обработка даты (твоя логика)
-    try:
-        # Принимаем строку вида "2023-10-27T12:00" или "2023-10-27 12:00"
-        raw_dt = trip_data.departure_time.replace('T', ' ')
-        # Убираем лишние символы, если они просочились (Z или +00:00)
-        raw_dt = raw_dt.replace('Z', '').split('+')[0]
-        
-        departure_dt = datetime.fromisoformat(raw_dt)
-        
-        new_trip_data["departure_date"] = departure_dt
-        new_trip_data["departure_time"] = departure_dt.strftime("%H:%M")
-    except Exception as e:
-        print(f"❌ Ошибка парсинга даты: {e}")
-        # Заглушка: текущее время + 3 часа (если не вышло распарсить)
-        new_trip_data["departure_date"] = datetime.now()
-        new_trip_data["departure_time"] = datetime.now().strftime("%H:%M")
-
-    # Создаем объект модели
     try:
         db_trip = database.DriverTrip(**new_trip_data)
         db.add(db_trip)
@@ -956,13 +956,7 @@ def create_trip(trip_data: TripCreate, db: Session = Depends(database.get_db), u
         return {"success": True, "trip_id": db_trip.id}
     except Exception as db_e:
         db.rollback()
-        print(f"❌ Ошибка базы данных: {db_e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(db_e)}")
-    
-    #db.add(db_trip)
-    #db.commit()
-    #db.refresh(db_trip)
-    #return {"success": True, "trip_id": db_trip.id}
+        raise HTTPException(status_code=500, detail=str(db_e))
 
 @app.get("/api/trips/{trip_id}")
 def get_trip_details(
