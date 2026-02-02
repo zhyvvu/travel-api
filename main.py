@@ -1019,6 +1019,7 @@ def create_booking(
     db: Session = Depends(database.get_db)
 ):
     """Создать бронирование"""
+    # 1. Ищем пользователя
     user = db.query(database.User).filter(
         database.User.telegram_id == telegram_id
     ).first()
@@ -1026,17 +1027,20 @@ def create_booking(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
+    # 2. Ищем поездку (только активную)
     trip = db.query(database.DriverTrip).filter(
         database.DriverTrip.id == booking_data.driver_trip_id,
         database.DriverTrip.status == database.TripStatus.ACTIVE
     ).first()
     
     if not trip:
-        raise HTTPException(status_code=404, detail="Поездка не найдена или недоступна")
+        raise HTTPException(status_code=404, detail="Поездка не найдена или уже завершена")
     
+    # 3. Проверяем наличие мест
     if trip.available_seats < booking_data.booked_seats:
-        raise HTTPException(status_code=400, detail="Недостаточно свободных мест")
+        raise HTTPException(status_code=400, detail=f"Недостаточно мест. Доступно: {trip.available_seats}")
     
+    # 4. Проверяем, не забронировал ли этот пользователь уже эту поездку
     existing_booking = db.query(database.Booking).filter(
         database.Booking.driver_trip_id == booking_data.driver_trip_id,
         database.Booking.passenger_id == user.id,
@@ -1044,33 +1048,44 @@ def create_booking(
     ).first()
     
     if existing_booking:
-        raise HTTPException(status_code=400, detail="Вы уже забронировали эту поездку")
-    
-    booking = database.Booking(
-        driver_trip_id=booking_data.driver_trip_id,
-        passenger_id=user.id,
-        booked_seats=booking_data.booked_seats,
-        price_agreed=trip.price_per_seat,
-        notes=booking_data.notes,
-        status=database.TripStatus.ACTIVE
-    )
-    
-    trip.available_seats -= booking_data.booked_seats
-    if trip.available_seats <= 0:
-        trip.status = database.TripStatus.COMPLETED
-    
-    db.add(booking)
-    db.commit()
-    db.refresh(booking)
-    
-    user.total_passenger_trips += 1
-    db.commit()
-    
-    return {
-        "success": True,
-        "message": "Место успешно забронировано",
-        "booking_id": booking.id
-    }
+        raise HTTPException(status_code=400, detail="Вы уже забронировали место в этой поездке")
+
+    try:
+        # 5. Создаем запись бронирования
+        booking = database.Booking(
+            driver_trip_id=booking_data.driver_trip_id,
+            passenger_id=user.id,
+            booked_seats=booking_data.booked_seats,
+            price_agreed=trip.price_per_seat,
+            notes=booking_data.notes,
+            status=database.TripStatus.ACTIVE
+        )
+        db.add(booking)
+        
+        # 6. Уменьшаем количество мест у водителя
+        # Мы НЕ меняем статус на COMPLETED, даже если мест 0. 
+        # Поездка остается ACTIVE, просто в поиске она не выдастся из-за фильтра мест.
+        trip.available_seats -= booking_data.booked_seats
+        
+        # 7. Обновляем статистику пассажира
+        user.total_passenger_trips += 1
+        
+        # Фиксируем все изменения одной транзакцией
+        db.commit()
+        db.refresh(booking)
+        db.refresh(trip)
+
+        return {
+            "success": True,
+            "message": "Место успешно забронировано",
+            "booking_id": booking.id,
+            "remaining_seats": trip.available_seats
+        }
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Ошибка при создании бронирования: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка базы данных при бронировании")
 
 # =============== ОТМЕНА ПОЕЗДКИ ВОДИТЕЛЯ ===============
 @app.post("/api/trips/{trip_id}/cancel")
